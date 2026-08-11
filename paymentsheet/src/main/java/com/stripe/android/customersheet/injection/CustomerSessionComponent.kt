@@ -1,0 +1,49 @@
+package com.stripe.android.customersheet.injection
+
+import android.app.Application
+import com.stripe.android.core.injection.CoreCommonModule
+import com.stripe.android.customersheet.CustomerAdapter
+import com.stripe.android.customersheet.CustomerSessionViewModel
+import com.stripe.android.customersheet.CustomerSheet
+import com.stripe.android.customersheet.CustomerSheetResultCallback
+import com.stripe.android.customersheet.CustomerSheetViewModel
+import com.stripe.android.customersheet.ExperimentalCustomerSheetApi
+import com.stripe.android.payments.core.injection.StripeRepositoryModule
+import dagger.BindsInstance
+import dagger.Component
+
+@OptIn(ExperimentalCustomerSheetApi::class)
+@CustomerSessionScope
+@Component(modules = [
+    CustomerSheetViewModelModule::class,
+    StripeRepositoryModule::class,
+])
+internal interface CustomerSessionComponent {
+    val customerSheetComponentBuilder: CustomerSheetComponent.Builder
+
+    val customerSheetViewModel: CustomerSheetViewModel
+
+    val configuration: CustomerSheet.Configuration
+    val customerAdapter: CustomerAdapter
+    val callback: CustomerSheetResultCallback
+
+    @Component.Builder
+    interface Builder {
+        @BindsInstance
+        fun application(application: Application): Builder
+
+        @BindsInstance
+        fun customerSessionViewModel(viewModel: CustomerSessionViewModel): Builder
+
+        @BindsInstance
+        fun configuration(configuration: CustomerSheet.Configuration): Builder
+
+        @BindsInstance
+        fun customerAdapter(customerAdapter: CustomerAdapter): Builder
+
+        @BindsInstance
+        fun callback(callback: CustomerSheetResultCallback): Builder
+
+        fun build(): CustomerSessionComponent
+    }
+}
