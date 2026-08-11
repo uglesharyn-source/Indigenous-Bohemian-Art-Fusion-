@@ -1,0 +1,106 @@
+package com.stripe.android.customersheet
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.annotation.VisibleForTesting
+import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.core.view.WindowCompat
+import com.stripe.android.common.ui.BottomSheet
+import com.stripe.android.common.ui.rememberBottomSheetState
+import com.stripe.android.customersheet.CustomerSheetViewAction.OnDismissed
+import com.stripe.android.customersheet.InternalCustomerSheetResult.Canceled
+import com.stripe.android.customersheet.ui.CustomerSheetScreen
+import com.stripe.android.uicore.StripeTheme
+import com.stripe.android.utils.AnimationConstants
+import kotlinx.coroutines.launch
+
+internal class CustomerSheetActivity : AppCompatActivity() {
+
+    // TODO (jameswoo) Figure out how to create real view model in CustomerSheetActivityTest
+    @VisibleForTesting
+    internal var viewModelProvider = {
+        CustomerSessionViewModel.component.customerSheetViewModel
+    }
+
+    /**
+     * TODO (jameswoo) verify that the [viewModels] delegate caches the right dependencies
+     *
+     * The ViewModel lifecycle is cached by this implementation, and the merchant might pass in
+     * different dependencies, adapter, result callback, etc. This may require us to recreate our
+     * [CustomerSessionScope], which would make it out of sync with what the [viewModels]
+     * implementation caches.
+     *
+     * TODO (jameswoo) The activity view model and the session view model have a similar lifespan,
+     * the activity view model should have a short life compared to the session view model. The
+     * activity view model should have a reference to the session view model
+     *
+     * We are not using `by viewModel` here because we don't want to clear the view model when
+     * the activity is destroyed.
+     */
+    private val viewModel by lazy {
+        viewModelProvider()
+    }
+
+    @OptIn(ExperimentalMaterialApi::class)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        setContent {
+            StripeTheme {
+                val bottomSheetState = rememberBottomSheetState()
+                val coroutineScope = rememberCoroutineScope()
+
+                val viewState by viewModel.viewState.collectAsState()
+                val result by viewModel.result.collectAsState()
+
+                LaunchedEffect(result) {
+                    result?.let { result ->
+                        bottomSheetState.hide()
+                        finishWithResult(result)
+                    }
+                }
+
+                BackHandler {
+                    // TODO This should call viewModel.handleViewAction(OnBackPressed). However,
+                    //  we need to change CustomerSheetActivityTest first to make that work.
+                    coroutineScope.launch {
+                        bottomSheetState.hide()
+                        finishWithResult(Canceled)
+                    }
+                }
+
+                BottomSheet(
+                    state = bottomSheetState,
+                    onDismissed = { viewModel.handleViewAction(OnDismissed) },
+                ) {
+                    CustomerSheetScreen(
+                        viewState = viewState,
+                        viewActionHandler = viewModel::handleViewAction,
+                        paymentMethodNameProvider = viewModel::providePaymentMethodName,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun finishWithResult(result: InternalCustomerSheetResult) {
+        setResult(RESULT_OK, Intent().putExtras(result.toBundle()))
+        viewModel.clear()
+        finish()
+    }
+
+    override fun finish() {
+        super.finish()
+        overridePendingTransition(AnimationConstants.FADE_IN, AnimationConstants.FADE_OUT)
+    }
+}
