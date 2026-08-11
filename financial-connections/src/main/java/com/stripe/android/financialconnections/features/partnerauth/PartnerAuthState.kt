@@ -1,0 +1,81 @@
+package com.stripe.android.financialconnections.features.partnerauth
+
+import com.airbnb.mvrx.Async
+import com.airbnb.mvrx.Fail
+import com.airbnb.mvrx.Loading
+import com.airbnb.mvrx.MavericksState
+import com.airbnb.mvrx.PersistState
+import com.airbnb.mvrx.Success
+import com.airbnb.mvrx.Uninitialized
+import com.stripe.android.financialconnections.model.DataAccessNotice
+import com.stripe.android.financialconnections.model.FinancialConnectionsAuthorizationSession
+import com.stripe.android.financialconnections.model.FinancialConnectionsInstitution
+
+internal data class PartnerAuthState(
+    /**
+     * The active auth session id. Used across process kills to prevent re-creating the session
+     * if one is already active.
+     */
+    @PersistState
+    val activeAuthSession: String? = null,
+    val payload: Async<Payload> = Uninitialized,
+    val viewEffect: ViewEffect? = null,
+    val authenticationStatus: Async<String> = Uninitialized
+) : MavericksState {
+
+    val dataAccess: DataAccessNotice?
+        get() = payload()?.authSession?.display?.text?.oauthPrepane?.dataAccessNotice
+
+    data class Payload(
+        val authSession: FinancialConnectionsAuthorizationSession,
+        val isStripeDirect: Boolean,
+        val institution: FinancialConnectionsInstitution,
+        /**
+         * Just for repair flows, null otherwise.
+         */
+        val repairPayload: RepairPayload? = null,
+        /**
+         * Just for challenge flows, null otherwise.
+         */
+        val challengePayload: ChallengePayload? = null,
+        val isChallenge: Boolean
+    )
+
+    data class RepairPayload(
+        val consumerSession: String,
+        val selectedAccountId: String,
+        val coreAuthorization: String
+    )
+
+    data class ChallengePayload(
+        val id: String,
+        val type: String
+    )
+
+    val canNavigateBack: Boolean
+        get() =
+            // Authentication running -> don't allow back navigation
+            authenticationStatus !is Loading &&
+                authenticationStatus !is Success &&
+                // Failures posting institution -> don't allow back navigation
+                payload !is Fail
+
+    sealed interface ViewEffect {
+        data class OpenPartnerAuth(
+            val url: String
+        ) : ViewEffect
+
+        data class OpenUrl(
+            val url: String,
+            val id: Long
+        ) : ViewEffect
+
+        data class OpenBottomSheet(
+            val id: Long
+        ) : ViewEffect
+    }
+
+    internal enum class ClickableText(val value: String) {
+        DATA("stripe://data-access-notice"),
+    }
+}
