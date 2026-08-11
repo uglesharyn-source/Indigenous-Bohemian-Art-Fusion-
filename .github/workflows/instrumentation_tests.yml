@@ -1,0 +1,72 @@
+name: Instrumentation tests
+on:
+  workflow_dispatch:
+  schedule:
+    # every 12 hours
+    - cron: '0 */12 * * *'
+jobs:
+  # This should be updated to use the browserstack github actions when supported
+  browserstack-instrumentation-tests:
+    name: Browserstack Instrumentation tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions/stripe_setup
+      - name: 'Build'
+        run: ./gradlew :paymentsheet-example:assembleDebugAndroidTest :paymentsheet-example:assembleDebug
+
+      - name: 'Install pip modules'
+        run: pip install requests_toolbelt requests
+
+      - name: 'Run BrowserStack tests'
+        env:
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+        run: python scripts/browserstack.py --test --apk paymentsheet-example/build/outputs/apk/debug/paymentsheet-example-debug.apk --espresso paymentsheet-example/build/outputs/apk/androidTest/debug/paymentsheet-example-debug-androidTest.apk
+
+      - name: Notify failure endpoint
+        id: notifyFailureEndpoint
+        if: failure()
+        run: |
+          ./scripts/notify_failure_endpoint.rb \
+          ${{ secrets.SDK_FAILURE_NOTIFICATION_ENDPOINT }} \
+          ${{ secrets.SDK_FAILURE_NOTIFICATION_ENDPOINT_HMAC_KEY }} \
+          ${{ github.run_id }} \
+          RUN_MOBILESDK
+
+  screenshot-regression-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions/stripe_setup
+      - name: run tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 28
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          sdcard-path-or-size: 512M
+          profile: Nexus 6
+          script: ./gradlew paymentsheet-example:executeScreenshotTests -Pandroid.testInstrumentationRunnerArguments.package=com.stripe.android.screenshot && ./gradlew paymentsheet:executeScreenshotTests -Pandroid.testInstrumentationRunnerArguments.package=com.stripe.android.paymentsheet.screenshot
+      - uses: actions/upload-artifact@v3
+        with:
+          if: success() || failure()
+          name: screenshot-test-report-paymentsheet-example
+          path: /Users/runner/work/stripe-android/stripe-android/paymentsheet-example/build/reports/shot/debug/verification/ |  /Users/runner/work/stripe-android/stripe-android/paymentsheet/build/reports/shot/debug/verification/
+      - uses: actions/upload-artifact@v3
+        with:
+          if: success() || failure()
+          name: screenshot-test-report-paymentsheet
+          path: /Users/runner/work/stripe-android/stripe-android/paymentsheet/build/reports/shot/debug/verification/
+#       - name: Notify failure endpoint
+#         id: notifyFailureEndpoint
+#         if: failure()
+#         run: |
+#           ./scripts/notify_failure_endpoint.rb \
+#           ${{ secrets.SDK_FAILURE_NOTIFICATION_ENDPOINT }} \
+#           ${{ secrets.SDK_FAILURE_NOTIFICATION_ENDPOINT_HMAC_KEY }} \
+#           ${{ github.run_id }} \
+#           RUN_MOBILESDK
