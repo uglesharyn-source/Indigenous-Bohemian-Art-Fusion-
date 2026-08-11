@@ -1,0 +1,49 @@
+appId: com.stripe.android.financialconnections.example
+---
+- launchApp
+# Android specific: Navigate to example (1)
+- extendedWaitUntil:
+      visible: "Collect account for data"
+      timeout: 100000
+- tapOn: "Collect account for data"
+
+# Android specific: Navigate to example (2)
+- extendedWaitUntil:
+    visible: "CONNECT AN ACCOUNT"
+    timeout: 100000
+- takeScreenshot: ExampleAppLauncher
+- tapOn: "CONNECT AN ACCOUNT"
+
+# Android specific - Chrome initial setup might open.
+- tapOn:
+    text: "Accept & continue"
+    optional: true
+- tapOn:
+    text: "No thanks"
+    optional: true
+# Common: web AuthFlow - connect OAuth institution
+- extendedWaitUntil:
+    visible: "Agree"
+    timeout: 100000
+- takeScreenshot: Consent
+- tapOn: "Agree"
+- extendedWaitUntil:
+    visible: "Test Institution"
+    timeout: 100000
+- takeScreenshot: BankPicker
+- tapOn: "Test Institution"
+- extendedWaitUntil:
+    visible: "All accounts"
+    timeout: 100000
+- takeScreenshot: AccountPicker_AllAccounts
+- tapOn: "All accounts" # deselect all accounts
+- scroll
+- tapOn: "Success" # select success account
+- takeScreenshot: AccountPicker_SuccessAccount
+# For some reason CTA cannot be found by text on account picker. Using pixels instead.
+- tapOn:
+      point: 500,2150
+- takeScreenshot: Success
+- tapOn: "Done"
+# Android specific: Assert the connected account displays on the sample app.
+- assertVisible: "StripeBank - Success - 6789 - CASH/CHECKING"
