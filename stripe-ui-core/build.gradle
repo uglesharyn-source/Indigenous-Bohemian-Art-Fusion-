@@ -1,0 +1,66 @@
+apply from: configs.androidLibrary
+
+apply plugin: 'kotlin-kapt'
+apply plugin: 'checkstyle'
+apply plugin: 'org.jetbrains.kotlin.plugin.parcelize'
+apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
+apply plugin: 'app.cash.paparazzi'
+
+ext {
+    artifactId = "stripe-ui-core"
+    artifactName = "stripe-ui-core"
+    artifactDescrption = "The core UI module of Stripe Android SDKs"
+}
+
+android {
+    buildFeatures {
+        compose true
+    }
+
+    testOptions {
+        unitTests {
+            // Note: without this, all Robolectric tests using assets will fail.
+            includeAndroidResources = true
+            all {
+                maxHeapSize = "1024m"
+            }
+        }
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion "${versions.androidxComposeCompiler}"
+    }
+}
+
+dependencies {
+    implementation project(":stripe-core")
+    implementation libs.androidx.annotation
+    implementation libs.androidx.coreKtx
+    implementation libs.compose.foundation
+    implementation libs.compose.material
+    implementation libs.compose.ui
+    implementation libs.compose.uiToolingPreview
+    implementation libs.dagger
+    implementation libs.diskLruCache
+    implementation libs.kotlin.coroutines
+    implementation libs.kotlin.coroutinesAndroid
+    implementation libs.kotlin.serialization
+
+    debugImplementation libs.compose.uiTestManifest
+    debugImplementation libs.compose.uiTooling
+
+    testImplementation libs.androidx.liveDataKtx
+    testImplementation testLibs.androidx.archCore
+    testImplementation testLibs.androidx.core
+    testImplementation testLibs.androidx.junitKtx
+    testImplementation testLibs.junit
+    testImplementation testLibs.kotlin.annotations
+    testImplementation testLibs.kotlin.coroutines
+    testImplementation testLibs.kotlin.junit
+    testImplementation testLibs.mockito.core
+    testImplementation testLibs.mockito.kotlin
+    testImplementation testLibs.robolectric
+    testImplementation testLibs.truth
+}
+
+apply from: "${rootDir}/deploy/deploy.gradle"
