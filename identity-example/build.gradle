@@ -1,0 +1,90 @@
+apply from: configs.androidApplication
+
+apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
+
+assemble.dependsOn('lint')
+
+android {
+    defaultConfig {
+        applicationId "com.stripe.android.identity.example"
+        versionCode 15
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildFeatures {
+        viewBinding true
+        compose true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion "${versions.androidxComposeCompiler}"
+    }
+
+    flavorDimensions += "theme"
+    productFlavors {
+        create("theme1") {
+            manifestPlaceholders["appTheme"] = "@style/Theme.Theme1"
+            manifestPlaceholders["appIcon"] = "@drawable/merchant_logo_purple"
+            manifestPlaceholders["appIconRound"] = "@drawable/merchant_logo_purple"
+
+            dimension = "theme"
+            applicationIdSuffix = ".theme1"
+            versionNameSuffix = "-theme1"
+        }
+        create("theme2") {
+            manifestPlaceholders["appTheme"] = "@style/Theme.Theme2"
+            manifestPlaceholders["appIcon"] = "@drawable/merchant_logo_red"
+            manifestPlaceholders["appIconRound"] = "@drawable/merchant_logo_red"
+
+            dimension = "theme"
+            applicationIdSuffix = ".theme2"
+            versionNameSuffix = "-theme2"
+        }
+    }
+}
+
+dependencies {
+
+//    def stripeversion = '20.24.0'
+//    implementation("com.stripe:identity:$stripeversion") {
+////        exclude group: 'com.stripe', module: 'stripe-core' // exclude the default tflite runtime
+//    }
+//    implementation("com.stripe:stripecardscan:$stripeversion") {
+//        exclude group: 'com.stripe', module: 'ml-core-cardscan' // exclude the cardscan-specific portable tflite runtime
+//    }
+//    implementation("com.stripe:ml-core-googleplay:$stripeversion")
+
+    implementation(project(":identity")) {
+        exclude module: 'default'
+    }
+
+    implementation(project(":stripecardscan")) {
+        exclude module: 'cardscan'
+    }
+
+    implementation project(":ml-core:googleplay")
+
+
+
+    implementation libs.accompanist.themeAdapter
+    implementation libs.androidx.appCompat
+    implementation libs.androidx.browser
+    implementation libs.androidx.constraintLayout
+    implementation libs.androidx.coreKtx
+    implementation libs.androidx.liveDataKtx
+    implementation libs.compose.activity
+    implementation libs.compose.liveData
+    implementation libs.compose.material
+    implementation libs.compose.ui
+    implementation libs.compose.viewModels
+    implementation libs.fuel
+    implementation libs.fuelCoroutines
+    implementation libs.kotlin.serialization
+    implementation libs.material
+
+    testImplementation testLibs.junit
+
+    // TODO(ccen) re-enable and investigate leak in Camera
+    // debugImplementation libs.leakCanary
+}
