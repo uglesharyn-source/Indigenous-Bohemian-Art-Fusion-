@@ -1,0 +1,441 @@
+package com.stripe.android.identity.networking
+
+import com.google.common.truth.Truth.assertThat
+import com.stripe.android.core.exception.APIConnectionException
+import com.stripe.android.core.exception.APIException
+import com.stripe.android.core.model.Country
+import com.stripe.android.core.model.CountryCode
+import com.stripe.android.core.model.StripeFile
+import com.stripe.android.core.model.parsers.StripeErrorJsonParser
+import com.stripe.android.core.networking.ApiRequest
+import com.stripe.android.core.networking.HEADER_AUTHORIZATION
+import com.stripe.android.core.networking.StripeNetworkClient
+import com.stripe.android.core.networking.StripeRequest
+import com.stripe.android.core.networking.StripeResponse
+import com.stripe.android.identity.networking.DefaultIdentityRepository.Companion.DATA
+import com.stripe.android.identity.networking.DefaultIdentityRepository.Companion.SUBMIT
+import com.stripe.android.identity.networking.models.ClearDataParam
+import com.stripe.android.identity.networking.models.ClearDataParam.Companion.createCollectedDataParamEntry
+import com.stripe.android.identity.networking.models.CollectedDataParam
+import com.stripe.android.identity.networking.models.CollectedDataParam.Companion.createCollectedDataParamEntry
+import com.stripe.android.identity.networking.models.Requirement
+import com.stripe.android.identity.networking.models.VerificationPage
+import com.stripe.android.identity.networking.models.VerificationPageData
+import com.stripe.android.identity.utils.IdentityIO
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.mockito.kotlin.KArgumentCaptor
+import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.whenever
+import org.robolectric.RobolectricTestRunner
+import java.io.File
+import java.net.HttpURLConnection.HTTP_OK
+import java.net.HttpURLConnection.HTTP_UNAUTHORIZED
+import kotlin.test.assertFailsWith
+
+@RunWith(RobolectricTestRunner::class)
+class DefaultIdentityRepositoryTest {
+    private val mockIO = mock<IdentityIO>().also {
+        whenever(it.createTFLiteFile(any())).thenReturn(mock())
+    }
+    private val mockStripeNetworkClient: StripeNetworkClient = mock()
+    private val identityRepository = DefaultIdentityRepository(
+        mockStripeNetworkClient,
+        mockIO
+    )
+
+    private val requestCaptor: KArgumentCaptor<StripeRequest> = argumentCaptor()
+
+    @Test
+    fun `retrieveVerificationPage - type document, not require live capture`() {
+        testFetchVerificationPage(VERIFICATION_PAGE_NOT_REQUIRE_LIVE_CAPTURE_JSON_STRING) {
+            assertThat(it.documentCapture.requireLiveCapture).isFalse()
+            assertThat(it.requirements.missing).containsExactly(
+                Requirement.BIOMETRICCONSENT,
+                Requirement.IDDOCUMENTTYPE,
+                Requirement.IDDOCUMENTFRONT,
+                Requirement.IDDOCUMENTBACK
+            )
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage - type document, require selfie`() {
+        testFetchVerificationPage(VERIFICATION_PAGE_REQUIRE_SELFIE_LIVE_CAPTURE_JSON_STRING) {
+            assertThat(it.selfieCapture).isNotNull()
+            assertThat(it.requirements.missing).containsExactly(
+                Requirement.BIOMETRICCONSENT,
+                Requirement.IDDOCUMENTTYPE,
+                Requirement.IDDOCUMENTFRONT,
+                Requirement.IDDOCUMENTBACK,
+                Requirement.FACE
+            )
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage - type document, require id_number`() {
+        testFetchVerificationPage(VERIFICATION_PAGE_TYPE_DOCUMENT_REQUIRE_ID_NUMBER_JSON_STRING) {
+            assertThat(it.requirements.missing).containsExactly(
+                Requirement.BIOMETRICCONSENT,
+                Requirement.IDDOCUMENTTYPE,
+                Requirement.IDDOCUMENTFRONT,
+                Requirement.IDDOCUMENTBACK,
+                Requirement.IDNUMBER
+            )
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage - type document, require address`() {
+        testFetchVerificationPage(VERIFICATION_PAGE_TYPE_DOCUMENT_REQUIRE_ADDRESS_JSON_STRING) {
+            assertThat(it.requirements.missing).containsExactly(
+                Requirement.BIOMETRICCONSENT,
+                Requirement.IDDOCUMENTTYPE,
+                Requirement.IDDOCUMENTFRONT,
+                Requirement.IDDOCUMENTBACK,
+                Requirement.ADDRESS
+            )
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage - type document, require address and id_number`() {
+        testFetchVerificationPage(
+            VERIFICATION_PAGE_TYPE_DOCUMENT_REQUIRE_ADDRESS_AND_ID_NUMBER_JSON_STRING
+        ) {
+            assertThat(it.requirements.missing).containsExactly(
+                Requirement.BIOMETRICCONSENT,
+                Requirement.IDDOCUMENTTYPE,
+                Requirement.IDDOCUMENTFRONT,
+                Requirement.IDDOCUMENTBACK,
+                Requirement.ADDRESS,
+                Requirement.IDNUMBER,
+            )
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage - type id`() {
+        testFetchVerificationPage(
+            VERIFICATION_PAGE_TYPE_ID_NUMBER_JSON_STRING
+        ) {
+            assertThat(it.requirements.missing).containsExactly(
+                Requirement.IDNUMBER,
+                Requirement.NAME,
+                Requirement.DOB
+            )
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage - type address`() {
+        testFetchVerificationPage(
+            VERIFICATION_PAGE_TYPE_ADDRESS_JSON_STRING
+        ) {
+            assertThat(it.requirements.missing).containsExactly(
+                Requirement.ADDRESS,
+                Requirement.NAME,
+                Requirement.DOB
+            )
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage - verify individual static page`() {
+        testFetchVerificationPage(
+            VERIFICATION_PAGE_TYPE_ADDRESS_JSON_STRING
+        ) {
+            assertThat(it.individual).isNotNull()
+            assertThat(requireNotNull(it.individual).addressCountries).hasSize(31)
+            assertThat(requireNotNull(it.individual).idNumberCountries).containsExactly(
+                Country(CountryCode("BR"), "Brazil"),
+                Country(CountryCode("SG"), "Singapore"),
+                Country(CountryCode("US"), "United States"),
+            )
+        }
+    }
+
+    @Test
+    fun `postVerificationPageData returns VerificationPageData`() {
+        runBlocking {
+            whenever(mockStripeNetworkClient.executeRequest(any())).thenReturn(
+                StripeResponse(
+                    code = HTTP_OK,
+                    body = VERIFICATION_PAGE_DATA_JSON_STRING
+                )
+            )
+            val collectedDataParam = CollectedDataParam(
+                biometricConsent = false
+            )
+
+            val clearDataParam = ClearDataParam()
+
+            val verificationPage = identityRepository.postVerificationPageData(
+                TEST_ID,
+                TEST_EPHEMERAL_KEY,
+                collectedDataParam,
+                clearDataParam
+            )
+
+            assertThat(verificationPage).isInstanceOf(VerificationPageData::class.java)
+            verify(mockStripeNetworkClient).executeRequest(requestCaptor.capture())
+
+            val request = requestCaptor.firstValue
+
+            assertThat(request).isInstanceOf(ApiRequest::class.java)
+            assertThat(request.method).isEqualTo(StripeRequest.Method.POST)
+            assertThat(request.url).isEqualTo("$BASE_URL/$IDENTITY_VERIFICATION_PAGES/$TEST_ID/$DATA")
+            assertThat(request.headers[HEADER_AUTHORIZATION]).isEqualTo("Bearer $TEST_EPHEMERAL_KEY")
+            assertThat((request as ApiRequest).params).isEqualTo(
+                mapOf(
+                    collectedDataParam.createCollectedDataParamEntry(identityRepository.json),
+                    clearDataParam.createCollectedDataParamEntry(identityRepository.json)
+                )
+            )
+        }
+    }
+
+    @Test
+    fun `postVerificationPageSubmit returns VerificationPageData`() {
+        runBlocking {
+            whenever(mockStripeNetworkClient.executeRequest(any())).thenReturn(
+                StripeResponse(
+                    code = HTTP_OK,
+                    body = VERIFICATION_PAGE_DATA_JSON_STRING
+                )
+            )
+            val verificationPage = identityRepository.postVerificationPageSubmit(
+                TEST_ID,
+                TEST_EPHEMERAL_KEY
+            )
+
+            assertThat(verificationPage).isInstanceOf(VerificationPageData::class.java)
+            verify(mockStripeNetworkClient).executeRequest(requestCaptor.capture())
+
+            val request = requestCaptor.firstValue
+
+            assertThat(request).isInstanceOf(ApiRequest::class.java)
+            assertThat(request.method).isEqualTo(StripeRequest.Method.POST)
+            assertThat(request.url).isEqualTo("$BASE_URL/$IDENTITY_VERIFICATION_PAGES/$TEST_ID/$SUBMIT")
+            assertThat(request.headers[HEADER_AUTHORIZATION]).isEqualTo("Bearer $TEST_EPHEMERAL_KEY")
+            assertThat((request as ApiRequest).params).isNull()
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage with error response throws APIException from executeRequestWithKSerializer`() {
+        runBlocking {
+            whenever(mockStripeNetworkClient.executeRequest(any())).thenReturn(
+                StripeResponse(
+                    code = HTTP_UNAUTHORIZED,
+                    body = ERROR_JSON_STRING
+                )
+            )
+            assertFailsWith<APIException> {
+                identityRepository.retrieveVerificationPage(
+                    TEST_ID,
+                    TEST_EPHEMERAL_KEY
+                )
+            }.let { apiException ->
+                assertThat(apiException.stripeError).isEqualTo(
+                    StripeErrorJsonParser().parse(JSONObject(ERROR_JSON_STRING))
+                )
+                assertThat(apiException.statusCode).isEqualTo(HTTP_UNAUTHORIZED)
+            }
+        }
+    }
+
+    @Test
+    fun `retrieveVerificationPage with network failure throws APIConnectionException from executeRequestWithKSerializer`() {
+        runBlocking {
+            val networkException = APIConnectionException()
+            whenever(mockStripeNetworkClient.executeRequest(any())).thenThrow(networkException)
+            assertFailsWith<APIConnectionException> {
+                identityRepository.retrieveVerificationPage(
+                    TEST_ID,
+                    TEST_EPHEMERAL_KEY
+                )
+            }.let { apiConnectionException ->
+                verify(mockStripeNetworkClient).executeRequest(requestCaptor.capture())
+                assertThat(apiConnectionException.message).isEqualTo("Failed to execute ${requestCaptor.firstValue}")
+                assertThat(apiConnectionException.cause).isSameInstanceAs(networkException)
+            }
+        }
+    }
+
+    @Test
+    fun `uploadImage returns InternalStripeFile`() {
+        runBlocking {
+            whenever(mockStripeNetworkClient.executeRequest(any())).thenReturn(
+                StripeResponse(
+                    code = HTTP_OK,
+                    body = FILE_UPLOAD_SUCCESS_JSON_STRING
+                )
+            )
+            val internalStripeFile = identityRepository.uploadImage(
+                TEST_ID,
+                TEST_EPHEMERAL_KEY,
+                mock(),
+                mock()
+            )
+
+            assertThat(internalStripeFile).isInstanceOf(StripeFile::class.java)
+            verify(mockStripeNetworkClient).executeRequest(requestCaptor.capture())
+
+            val request = requestCaptor.firstValue
+
+            assertThat(request).isInstanceOf(IdentityFileUploadRequest::class.java)
+            assertThat((request as IdentityFileUploadRequest).verificationId).isEqualTo(TEST_ID)
+            assertThat(request.headers[HEADER_AUTHORIZATION]).isEqualTo("Bearer $TEST_EPHEMERAL_KEY")
+        }
+    }
+
+    @Test
+    fun `uploadImage with error response throws APIException from executeRequestWithModelJsonParser`() {
+        runBlocking {
+            whenever(mockStripeNetworkClient.executeRequest(any())).thenReturn(
+                StripeResponse(
+                    code = HTTP_UNAUTHORIZED,
+                    body = ERROR_JSON_STRING
+                )
+            )
+            assertFailsWith<APIException> {
+                identityRepository.uploadImage(
+                    TEST_ID,
+                    TEST_EPHEMERAL_KEY,
+                    mock(),
+                    mock()
+                )
+            }.let { apiException ->
+                assertThat(apiException.stripeError).isEqualTo(
+                    StripeErrorJsonParser().parse(JSONObject(ERROR_JSON_STRING))
+                )
+                assertThat(apiException.statusCode).isEqualTo(HTTP_UNAUTHORIZED)
+            }
+        }
+    }
+
+    @Test
+    fun `uploadImage with network failure throws APIConnectionException from executeRequestWithModelJsonParser`() {
+        runBlocking {
+            val networkException = APIConnectionException()
+            whenever(mockStripeNetworkClient.executeRequest(any())).thenThrow(networkException)
+            assertFailsWith<APIConnectionException> {
+                identityRepository.uploadImage(
+                    TEST_ID,
+                    TEST_EPHEMERAL_KEY,
+                    mock(),
+                    mock()
+                )
+            }.let { apiConnectionException ->
+                verify(mockStripeNetworkClient).executeRequest(requestCaptor.capture())
+                assertThat(apiConnectionException.message).isEqualTo("Failed to execute ${requestCaptor.firstValue}")
+                assertThat(apiConnectionException.cause).isSameInstanceAs(networkException)
+            }
+        }
+    }
+
+    @Test
+    fun `downloadModel returns File`() {
+        runBlocking {
+            val mockFile = mock<File>()
+            whenever(mockStripeNetworkClient.executeRequestForFile(any(), any())).thenReturn(
+                StripeResponse(
+                    code = HTTP_OK,
+                    body = mockFile
+                )
+            )
+            val downloadedModel = identityRepository.downloadModel(TEST_URL)
+
+            assertThat(downloadedModel).isSameInstanceAs(mockFile)
+            verify(mockStripeNetworkClient).executeRequestForFile(requestCaptor.capture(), any())
+
+            val request = requestCaptor.firstValue
+
+            assertThat(request).isInstanceOf(IdentityFileDownloadRequest::class.java)
+            assertThat((request as IdentityFileDownloadRequest).url).isEqualTo(TEST_URL)
+        }
+    }
+
+    @Test
+    fun `downloadModel with error response throws APIException`() {
+        runBlocking {
+            whenever(mockStripeNetworkClient.executeRequestForFile(any(), any())).thenReturn(
+                StripeResponse(
+                    code = HTTP_UNAUTHORIZED,
+                    body = mock()
+                )
+            )
+            assertFailsWith<APIException> {
+                identityRepository.downloadModel(TEST_URL)
+            }.let { apiException ->
+                assertThat(apiException.statusCode).isEqualTo(HTTP_UNAUTHORIZED)
+                assertThat(apiException.message).isEqualTo(
+                    "Downloading from $TEST_URL returns error response"
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `downloadModel with network failure throws APIConnectionException`() {
+        runBlocking {
+            val networkException = APIConnectionException()
+            whenever(mockStripeNetworkClient.executeRequestForFile(any(), any())).thenThrow(
+                networkException
+            )
+            assertFailsWith<APIConnectionException> {
+                identityRepository.downloadModel(TEST_URL)
+            }.let { apiConnectionException ->
+                verify(mockStripeNetworkClient).executeRequestForFile(
+                    requestCaptor.capture(),
+                    any()
+                )
+                assertThat(apiConnectionException.message).isEqualTo("Fail to download file at $TEST_URL")
+                assertThat(apiConnectionException.cause).isSameInstanceAs(networkException)
+            }
+        }
+    }
+
+    private fun testFetchVerificationPage(
+        body: String,
+        verificationPageBlock: (VerificationPage) -> Unit
+    ) {
+        runBlocking {
+            whenever(mockStripeNetworkClient.executeRequest(any())).thenReturn(
+                StripeResponse(
+                    code = HTTP_OK,
+                    body = body
+                )
+            )
+            val verificationPage = identityRepository.retrieveVerificationPage(
+                TEST_ID,
+                TEST_EPHEMERAL_KEY
+            )
+
+            assertThat(verificationPage).isInstanceOf(VerificationPage::class.java)
+            verify(mockStripeNetworkClient).executeRequest(requestCaptor.capture())
+
+            val request = requestCaptor.firstValue
+
+            assertThat(request).isInstanceOf(ApiRequest::class.java)
+            assertThat(request.method).isEqualTo(StripeRequest.Method.GET)
+            assertThat(request.url).isEqualTo("$BASE_URL/$IDENTITY_VERIFICATION_PAGES/$TEST_ID")
+            assertThat(request.headers[HEADER_AUTHORIZATION]).isEqualTo("Bearer $TEST_EPHEMERAL_KEY")
+
+            verificationPageBlock(verificationPage)
+        }
+    }
+
+    private companion object {
+        const val TEST_EPHEMERAL_KEY = "ek_test_12345"
+        const val TEST_ID = "vs_12345"
+        const val TEST_URL = "http://url/to/model.tflite"
+    }
+}
