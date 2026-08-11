@@ -1,0 +1,882 @@
+package com.stripe.android
+
+import android.os.Parcel
+import com.google.common.truth.Truth.assertThat
+import com.stripe.android.core.model.StripeJsonUtils
+import com.stripe.android.core.version.StripeSdkVersion
+import com.stripe.android.model.CardBrand
+import com.stripe.android.model.CardFunding
+import com.stripe.android.model.PaymentMethod
+import kotlinx.parcelize.Parcelize
+import org.json.JSONObject
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import java.util.UUID
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+@RunWith(RobolectricTestRunner::class)
+class GooglePayJsonFactoryTest {
+
+    private val googlePayConfig = GooglePayConfig(ApiKeyFixtures.DEFAULT_PUBLISHABLE_KEY)
+    private val factory = GooglePayJsonFactory(googlePayConfig)
+
+    @Test
+    fun testCreateIsReadyToPayRequestJson_withoutArgs() {
+        val isReadyToPayRequestJson = factory.createIsReadyToPayRequest()
+        val expectedJson = JSONObject(
+            """
+            {
+                "apiVersion": 2,
+                "apiVersionMinor": 0,
+                "allowedPaymentMethods": [{
+                    "type": "CARD",
+                    "parameters": {
+                        "allowedAuthMethods": ["PAN_ONLY", "CRYPTOGRAM_3DS"],
+                        "allowedCardNetworks": ["AMEX", "DISCOVER", "MASTERCARD", "VISA"],
+                        "allowCreditCards": true,
+                        "allowPrepaidCards": true
+                    },
+                    "tokenizationSpecification": {
+                        "type": "PAYMENT_GATEWAY",
+                        "parameters": {
+                            "gateway": "stripe",
+                            "stripe:version": "StripeAndroid/${StripeSdkVersion.VERSION_NAME}",
+                            "stripe:publishableKey": "${ApiKeyFixtures.DEFAULT_PUBLISHABLE_KEY}"
+                        }
+                    }
+                }]
+            }
+            """.trimIndent()
+        )
+        assertEquals(expectedJson.toString(), isReadyToPayRequestJson.toString())
+    }
+
+    @Test
+    fun testCreateIsReadyToPayRequestJson_withArgs() {
+        val isReadyToPayRequestJson = factory.createIsReadyToPayRequest(
+            billingAddressParameters = GooglePayJsonFactory.BillingAddressParameters(
+                isRequired = true,
+                format = GooglePayJsonFactory.BillingAddressParameters.Format.Full,
+                isPhoneNumberRequired = true
+            ),
+            existingPaymentMethodRequired = true
+        )
+        val expectedJson = JSONObject(
+            """
+            {
+                "apiVersion": 2,
+                "apiVersionMinor": 0,
+                "allowedPaymentMethods": [{
+                    "type": "CARD",
+                    "parameters": {
+                        "allowedAuthMethods": ["PAN_ONLY", "CRYPTOGRAM_3DS"],
+                        "allowedCardNetworks": ["AMEX", "DISCOVER", "MASTERCARD", "VISA"],
+                        "billingAddressRequired": true,
+                        "billingAddressParameters": {
+                            "phoneNumberRequired": true,
+                            "format": "FULL"
+                        },
+                        "allowCreditCards": true,
+                        "allowPrepaidCards": true
+                    },
+                    "tokenizationSpecification": {
+                        "type": "PAYMENT_GATEWAY",
+                        "parameters": {
+                            "gateway": "stripe",
+                            "stripe:version": "StripeAndroid/${StripeSdkVersion.VERSION_NAME}",
+                            "stripe:publishableKey": "${ApiKeyFixtures.DEFAULT_PUBLISHABLE_KEY}"
+                        }
+                    }
+                }],
+                "existingPaymentMethodRequired": true
+            }
+            """.trimIndent()
+        )
+        assertThat(isReadyToPayRequestJson.toString())
+            .isEqualTo(expectedJson.toString())
+    }
+
+    @Test
+    fun testCreatePaymentMethodRequestJson() {
+        val transactionId = UUID.randomUUID().toString()
+        val expectedJson = JSONObject(
+            """
+            {
+                "apiVersion": 2,
+                "apiVersionMinor": 0,
+                "allowedPaymentMethods": [{
+                    "type": "CARD",
+                    "parameters": {
+                        "allowedAuthMethods": ["PAN_ONLY", "CRYPTOGRAM_3DS"],
+                        "allowedCardNetworks": ["AMEX", "DISCOVER", "MASTERCARD", "VISA"],
+                        "billingAddressRequired": true,
+                        "billingAddressParameters": {
+                            "phoneNumberRequired": true,
+                            "format": "FULL"
+                        },
+                        "allowCreditCards": true,
+                        "allowPrepaidCards": true
+                    },
+                    "tokenizationSpecification": {
+                        "type": "PAYMENT_GATEWAY",
+                        "parameters": {
+                            "gateway": "stripe",
+                            "stripe:version": "StripeAndroid/${StripeSdkVersion.VERSION_NAME}",
+                            "stripe:publishableKey": "${ApiKeyFixtures.DEFAULT_PUBLISHABLE_KEY}"
+                        }
+                    }
+                }],
+                "transactionInfo": {
+                    "currencyCode": "USD",
+                    "totalPriceStatus": "ESTIMATED",
+                    "countryCode": "US",
+                    "transactionId": "$transactionId",
+                    "totalPrice": "5.00",
+                    "totalPriceLabel": "Your total price",
+                    "checkoutOption": "COMPLETE_IMMEDIATE_PURCHASE"
+                },
+                "emailRequired": false,
+                "shippingAddressRequired": true,
+                "shippingAddressParameters": {
+                    "allowedCountryCodes": ["US", "DE"],
+                    "phoneNumberRequired": true
+                },
+                "merchantInfo": {
+                    "merchantName": "Widget Store",
+                    "softwareInfo": {
+                        "id": "android/stripe-launcher",
+                        "version": "${StripeSdkVersion.VERSION_NAME}"
+                    }
+                }
+            }
+            """.trimIndent()
+        )
+
+        val createPaymentDataRequestJson = factory.createPaymentDataRequest(
+            transactionInfo = GooglePayJsonFactory.TransactionInfo(
+                currencyCode = "USD",
+                totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Estimated,
+                totalPrice = 500L,
+                countryCode = "US",
+                transactionId = transactionId,
+                totalPriceLabel = "Your total price",
+                checkoutOption = GooglePayJsonFactory.TransactionInfo.CheckoutOption.CompleteImmediatePurchase
+            ),
+            billingAddressParameters = GooglePayJsonFactory.BillingAddressParameters(
+                isRequired = true,
+                format = GooglePayJsonFactory.BillingAddressParameters.Format.Full,
+                isPhoneNumberRequired = true
+            ),
+            merchantInfo = GooglePayJsonFactory.MerchantInfo(
+                merchantName = "Widget Store",
+                softwareInfo = GooglePayJsonFactory.SoftwareInfo(
+                    id = GooglePayJsonFactory.SoftwareInfo.SoftwareId.Launcher
+                )
+            ),
+            shippingAddressParameters = GooglePayJsonFactory.ShippingAddressParameters(
+                isRequired = true,
+                allowedCountryCodes = setOf("US", "DE"),
+                phoneNumberRequired = true
+            )
+        )
+
+        assertEquals(expectedJson.toString(), createPaymentDataRequestJson.toString())
+    }
+
+    @Test
+    fun countryCode_shouldBeCapitalized() {
+        val createPaymentDataRequestJson = factory.createPaymentDataRequest(
+            transactionInfo = GooglePayJsonFactory.TransactionInfo(
+                currencyCode = "USD",
+                totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Estimated,
+                countryCode = "us"
+            )
+        )
+        val countryCode = createPaymentDataRequestJson
+            .getJSONObject("transactionInfo")
+            .getString("countryCode")
+        assertThat(countryCode)
+            .isEqualTo("US")
+    }
+
+    @Test
+    fun currencyCode_shouldBeCapitalized() {
+        val createPaymentDataRequestJson = factory.createPaymentDataRequest(
+            transactionInfo = GooglePayJsonFactory.TransactionInfo(
+                currencyCode = "usd",
+                totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Final
+            )
+        )
+        val currencyCode = createPaymentDataRequestJson
+            .getJSONObject("transactionInfo")
+            .getString("currencyCode")
+        assertThat(currencyCode)
+            .isEqualTo("USD")
+    }
+
+    @Test
+    fun shippingAddressAllowedCountryCodes_shouldBeCapitalized() {
+        val createPaymentDataRequestJson = factory.createPaymentDataRequest(
+            transactionInfo = GooglePayJsonFactory.TransactionInfo(
+                currencyCode = "USD",
+                totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Estimated,
+                totalPrice = 500,
+                countryCode = "US",
+                totalPriceLabel = "Your total price"
+            ),
+            shippingAddressParameters = GooglePayJsonFactory.ShippingAddressParameters(
+                isRequired = true,
+                allowedCountryCodes = setOf("us", "de")
+            )
+        )
+
+        val allowedCountryCodes = createPaymentDataRequestJson
+            .getJSONObject("shippingAddressParameters")
+            .getJSONArray("allowedCountryCodes")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        assertThat(allowedCountryCodes)
+            .containsExactly("US", "DE")
+    }
+
+    @Test
+    fun allowedCardNetworks_whenJcbDisabled_shouldNotIncludeJcb() {
+        val allowedCardNetworks = factory.createIsReadyToPayRequest()
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getJSONArray("allowedCardNetworks")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        assertThat(allowedCardNetworks)
+            .isEqualTo(listOf("AMEX", "DISCOVER", "MASTERCARD", "VISA"))
+    }
+
+    @Test
+    fun allowedCardNetworks_whenJcbEnabled_shouldIncludeJcb() {
+        val allowedCardNetworks =
+            GooglePayJsonFactory(googlePayConfig, isJcbEnabled = true)
+                .createIsReadyToPayRequest()
+                .getJSONArray("allowedPaymentMethods")
+                .getJSONObject(0)
+                .getJSONObject("parameters")
+                .getJSONArray("allowedCardNetworks")
+                .let {
+                    StripeJsonUtils.jsonArrayToList(it)
+                }
+
+        assertThat(allowedCardNetworks)
+            .isEqualTo(listOf("AMEX", "DISCOVER", "MASTERCARD", "VISA", "JCB"))
+    }
+
+    @Test
+    fun allowedCardNetworks_whenAdditionalEnabledNetworksEmpty_shouldNotIncludeAdditionEnabledNetworks() {
+        val allowedCardNetworks = factory.createIsReadyToPayRequest()
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getJSONArray("allowedCardNetworks")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        assertThat(allowedCardNetworks)
+            .isEqualTo(listOf("AMEX", "DISCOVER", "MASTERCARD", "VISA"))
+    }
+
+    @Test
+    fun allowedCardNetworks_whenAdditionalEnabledNetworksNotEmpty_shouldIncludeAdditionEnabledNetworks() {
+        val allowedCardNetworks = GooglePayJsonFactory(googlePayConfig, additionalEnabledNetworks = listOf("INTERAC"))
+            .createIsReadyToPayRequest()
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getJSONArray("allowedCardNetworks")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        assertThat(allowedCardNetworks)
+            .isEqualTo(listOf("AMEX", "DISCOVER", "MASTERCARD", "VISA", "INTERAC"))
+    }
+
+    @Test
+    fun allowCreditCards_whenTrue_shouldIncludeAllowCreditCardsInRequest() {
+        val allowCreditCards =
+            GooglePayJsonFactory(googlePayConfig)
+                .createIsReadyToPayRequest(
+                    allowCreditCards = true
+                )
+                .getJSONArray("allowedPaymentMethods")
+                .getJSONObject(0)
+                .getJSONObject("parameters")
+                .getBoolean("allowCreditCards")
+
+        assertThat(allowCreditCards)
+            .isEqualTo(true)
+    }
+
+    @Test
+    fun allowCreditCards_whenFalse_shouldIncludeAllowCreditCardsInRequest() {
+        val allowCreditCards =
+            GooglePayJsonFactory(googlePayConfig)
+                .createIsReadyToPayRequest(
+                    allowCreditCards = false
+                )
+                .getJSONArray("allowedPaymentMethods")
+                .getJSONObject(0)
+                .getJSONObject("parameters")
+                .getBoolean("allowCreditCards")
+
+        assertThat(allowCreditCards)
+            .isEqualTo(false)
+    }
+
+    @Test
+    fun allowCreditCards_whenNull_shouldBeTrueWhenAcceptedByCardFundingFilter() {
+        assertCardFundingParameter(
+            parameterName = "allowCreditCards",
+            cardFundingFilter = FakeCardFundingFilter(acceptCredit = true),
+            expectedValue = true
+        )
+    }
+
+    @Test
+    fun allowCreditCards_whenNull_shouldBeFalseWhenRejectedByCardFundingFilter() {
+        assertCardFundingParameter(
+            parameterName = "allowCreditCards",
+            cardFundingFilter = FakeCardFundingFilter(acceptCredit = false),
+            expectedValue = false
+        )
+    }
+
+    @Test
+    fun allowPrepaidCards_shouldBeTrueWhenAcceptedByCardFundingFilter() {
+        assertCardFundingParameter(
+            parameterName = "allowPrepaidCards",
+            cardFundingFilter = FakeCardFundingFilter(acceptPrepaid = true),
+            expectedValue = true
+        )
+    }
+
+    @Test
+    fun allowPrepaidCards_shouldBeFalseWhenRejectedByCardFundingFilter() {
+        assertCardFundingParameter(
+            parameterName = "allowPrepaidCards",
+            cardFundingFilter = FakeCardFundingFilter(acceptPrepaid = false),
+            expectedValue = false
+        )
+    }
+
+    private fun assertCardFundingParameter(
+        parameterName: String,
+        cardFundingFilter: CardFundingFilter,
+        expectedValue: Boolean
+    ) {
+        val actualValue = GooglePayJsonFactory(
+            googlePayConfig,
+            cardFundingFilter = cardFundingFilter
+        )
+            .createIsReadyToPayRequest()
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getBoolean(parameterName)
+
+        assertThat(actualValue).isEqualTo(expectedValue)
+    }
+
+    @Test
+    fun `allowedCardNetworks should only include Visa and Mastercard when filtered`() {
+        // Create a CardBrandFilter that accepts only Visa and Mastercard
+        val customCardBrandFilter = object : CardBrandFilter {
+            override fun isAccepted(cardBrand: CardBrand): Boolean {
+                return cardBrand == CardBrand.Visa || cardBrand == CardBrand.MasterCard
+            }
+
+            override fun isAccepted(paymentMethod: PaymentMethod): Boolean {
+                throw IllegalStateException("Should not be called!")
+            }
+
+            override fun describeContents(): Int {
+                throw IllegalStateException("describeContents should not be called.")
+            }
+
+            override fun writeToParcel(p0: Parcel, p1: Int) {
+                throw IllegalStateException("writeToParcel should not be called.")
+            }
+        }
+
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+            isJcbEnabled = false,
+            cardBrandFilter = customCardBrandFilter
+        )
+
+        val createCardPaymentMethodRequestJson = factory.createCardPaymentMethod(
+            billingAddressParameters = null,
+            allowCreditCards = true
+        )
+
+        val allowedCardNetworks = createCardPaymentMethodRequestJson
+            .getJSONObject("parameters")
+            .optJSONArray("allowedCardNetworks")
+            .let { StripeJsonUtils.jsonArrayToList(it) }
+
+        assertThat(allowedCardNetworks)
+            .containsExactly("MASTERCARD", "VISA")
+    }
+
+    @Test
+    fun `allowedCardNetworks should be empty when all card brands are filtered out`() {
+        // Create a CardBrandFilter that rejects all card brands
+        val customCardBrandFilter = object : CardBrandFilter {
+            override fun isAccepted(cardBrand: CardBrand): Boolean {
+                return false
+            }
+
+            override fun isAccepted(paymentMethod: PaymentMethod): Boolean {
+                throw IllegalStateException("Should not be called!")
+            }
+
+            override fun describeContents(): Int {
+                throw IllegalStateException("describeContents should not be called.")
+            }
+
+            override fun writeToParcel(p0: Parcel, p1: Int) {
+                throw IllegalStateException("writeToParcel should not be called.")
+            }
+        }
+
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+            isJcbEnabled = false,
+            cardBrandFilter = customCardBrandFilter
+        )
+
+        val createCardPaymentMethodRequestJson = factory.createCardPaymentMethod(
+            billingAddressParameters = null,
+            allowCreditCards = true
+        )
+
+        val allowedCardNetworks = createCardPaymentMethodRequestJson
+            .getJSONObject("parameters")
+            .optJSONArray("allowedCardNetworks")
+            .let { StripeJsonUtils.jsonArrayToList(it) }
+
+        // Since all card brands are filtered out, allowedCardNetworks should be empty
+        assertThat(allowedCardNetworks).isEmpty()
+    }
+
+    @Test
+    fun `allowedCardNetworks should include all default networks when no filtering`() {
+        // Create a CardBrandFilter that accepts all card brands
+        val customCardBrandFilter = object : CardBrandFilter {
+            override fun isAccepted(cardBrand: CardBrand): Boolean {
+                return true
+            }
+
+            override fun isAccepted(paymentMethod: PaymentMethod): Boolean {
+                throw IllegalStateException("Should not be called!")
+            }
+
+            override fun describeContents(): Int {
+                throw IllegalStateException("describeContents should not be called.")
+            }
+
+            override fun writeToParcel(p0: Parcel, p1: Int) {
+                throw IllegalStateException("writeToParcel should not be called.")
+            }
+        }
+
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+            isJcbEnabled = false,
+            cardBrandFilter = customCardBrandFilter
+        )
+
+        val isReadyToPayRequestJson = factory.createIsReadyToPayRequest()
+
+        val allowedCardNetworks = isReadyToPayRequestJson
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getJSONArray("allowedCardNetworks")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        assertThat(allowedCardNetworks)
+            .containsExactly("AMEX", "DISCOVER", "MASTERCARD", "VISA")
+    }
+
+    @Test
+    fun `allowedCardNetworks should include all default networks when no filter passed in`() {
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+            isJcbEnabled = false
+        )
+
+        val isReadyToPayRequestJson = factory.createIsReadyToPayRequest()
+
+        val allowedCardNetworks = isReadyToPayRequestJson
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getJSONArray("allowedCardNetworks")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        assertThat(allowedCardNetworks)
+            .containsExactly("AMEX", "DISCOVER", "MASTERCARD", "VISA")
+    }
+
+    @Test
+    fun `allowedCardNetworks should include JCB when JCB is enabled and accepted by filter`() {
+        // Create a CardBrandFilter that accepts all card brands
+        val customCardBrandFilter = object : CardBrandFilter {
+            override fun isAccepted(cardBrand: CardBrand): Boolean {
+                return true
+            }
+
+            override fun isAccepted(paymentMethod: PaymentMethod): Boolean {
+                throw IllegalStateException("Should not be called!")
+            }
+
+            override fun describeContents(): Int {
+                throw IllegalStateException("describeContents should not be called.")
+            }
+
+            override fun writeToParcel(p0: Parcel, p1: Int) {
+                throw IllegalStateException("writeToParcel should not be called.")
+            }
+        }
+
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+            isJcbEnabled = true,
+            cardBrandFilter = customCardBrandFilter
+        )
+
+        val isReadyToPayRequestJson = factory.createIsReadyToPayRequest()
+
+        val allowedCardNetworks = isReadyToPayRequestJson
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getJSONArray("allowedCardNetworks")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        assertThat(allowedCardNetworks)
+            .containsExactly("AMEX", "DISCOVER", "MASTERCARD", "VISA", "JCB")
+    }
+
+    @Test
+    fun `allowedCardNetworks should not include JCB when JCB is enabled but filtered out`() {
+        // Create a CardBrandFilter that rejects JCB
+        val customCardBrandFilter = object : CardBrandFilter {
+            override fun isAccepted(cardBrand: CardBrand): Boolean {
+                return cardBrand != CardBrand.JCB
+            }
+
+            override fun isAccepted(paymentMethod: PaymentMethod): Boolean {
+                throw IllegalStateException("Should not be called!")
+            }
+
+            override fun describeContents(): Int {
+                throw IllegalStateException("describeContents should not be called.")
+            }
+
+            override fun writeToParcel(p0: Parcel, p1: Int) {
+                throw IllegalStateException("writeToParcel should not be called.")
+            }
+        }
+
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+            isJcbEnabled = true,
+            cardBrandFilter = customCardBrandFilter
+        )
+
+        val createCardPaymentMethodRequestJson = factory.createCardPaymentMethod(
+            billingAddressParameters = null,
+            allowCreditCards = true
+        )
+
+        val allowedCardNetworks = createCardPaymentMethodRequestJson
+            .getJSONObject("parameters")
+            .optJSONArray("allowedCardNetworks")
+            .let { StripeJsonUtils.jsonArrayToList(it) }
+
+        // JCB should not be included even though JCB is enabled, because it's filtered out
+        assertThat(allowedCardNetworks)
+            .containsExactly("AMEX", "DISCOVER", "MASTERCARD", "VISA")
+    }
+
+    @Test
+    fun `createIsReadyToPayRequest should include all card networks regardless of filter`() {
+        // Create a CardBrandFilter that only accepts Visa and Mastercard
+        val customCardBrandFilter = object : CardBrandFilter {
+            override fun isAccepted(cardBrand: CardBrand): Boolean {
+                return cardBrand == CardBrand.Visa || cardBrand == CardBrand.MasterCard
+            }
+
+            override fun isAccepted(paymentMethod: PaymentMethod): Boolean {
+                throw IllegalStateException("Should not be called!")
+            }
+
+            override fun describeContents(): Int {
+                throw IllegalStateException("describeContents should not be called.")
+            }
+
+            override fun writeToParcel(p0: Parcel, p1: Int) {
+                throw IllegalStateException("writeToParcel should not be called.")
+            }
+        }
+
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+            isJcbEnabled = true,
+            cardBrandFilter = customCardBrandFilter
+        )
+
+        // Test isReadyToPayRequest
+        val isReadyToPayRequestJson = factory.createIsReadyToPayRequest()
+
+        val isReadyAllowedCardNetworks = isReadyToPayRequestJson
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getJSONArray("allowedCardNetworks")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        // isReadyToPayRequest should include all card networks
+        assertThat(isReadyAllowedCardNetworks)
+            .containsExactly("AMEX", "DISCOVER", "MASTERCARD", "VISA", "JCB")
+
+        // Test regular payment request
+        val paymentDataRequestJson = factory.createPaymentDataRequest(
+            transactionInfo = GooglePayJsonFactory.TransactionInfo(
+                currencyCode = "USD",
+                totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Final,
+                totalPrice = 100
+            )
+        )
+
+        val paymentDataAllowedCardNetworks = paymentDataRequestJson
+            .getJSONArray("allowedPaymentMethods")
+            .getJSONObject(0)
+            .getJSONObject("parameters")
+            .getJSONArray("allowedCardNetworks")
+            .let {
+                StripeJsonUtils.jsonArrayToList(it)
+            }
+
+        // Regular payment request should only include filtered card networks
+        assertThat(paymentDataAllowedCardNetworks)
+            .containsExactly("MASTERCARD", "VISA")
+    }
+
+    @Test
+    fun `'merchantInfo' should have 'stripe-manual-api' by default when software identifier not provided`() {
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+        )
+
+        val createCardPaymentMethodRequestJson = factory.createPaymentDataRequest(
+            billingAddressParameters = null,
+            allowCreditCards = true,
+            transactionInfo = GooglePayJsonFactory.TransactionInfo(
+                currencyCode = "CAD",
+                totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Final
+            ),
+            merchantInfo = null,
+        )
+
+        val softwareInfo = createCardPaymentMethodRequestJson
+            .getJSONObject("merchantInfo")
+            .getJSONObject("softwareInfo")
+
+        assertThat(softwareInfo.getString("id")).isEqualTo("android/stripe-manual-api")
+    }
+
+    @Test
+    fun `'merchantInfo' should have 'stripe-elements' when specific software identifier is provided`() {
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+        )
+
+        val createCardPaymentMethodRequestJson = factory.createPaymentDataRequest(
+            billingAddressParameters = null,
+            allowCreditCards = true,
+            transactionInfo = GooglePayJsonFactory.TransactionInfo(
+                currencyCode = "CAD",
+                totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Final
+            ),
+            merchantInfo = GooglePayJsonFactory.MerchantInfo(
+                softwareInfo = GooglePayJsonFactory.SoftwareInfo(
+                    id = GooglePayJsonFactory.SoftwareInfo.SoftwareId.Elements,
+                )
+            ),
+        )
+
+        val softwareInfo = createCardPaymentMethodRequestJson
+            .getJSONObject("merchantInfo")
+            .getJSONObject("softwareInfo")
+
+        assertThat(softwareInfo.getString("id")).isEqualTo("android/stripe-elements")
+    }
+
+    @Test
+    fun `'transactionInfo' should include displayItems when provided`() {
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+        )
+
+        val transactionInfo = GooglePayJsonFactory.TransactionInfo(
+            currencyCode = "USD",
+            totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Final,
+            countryCode = "US",
+            transactionId = null,
+            totalPrice = 2500L,
+            totalPriceLabel = null,
+            checkoutOption = null,
+            displayItems = listOf(
+                GooglePayJsonFactory.DisplayItem(
+                    label = "Widget",
+                    type = GooglePayJsonFactory.DisplayItem.Type.LINE_ITEM,
+                    price = 2000L,
+                ),
+                GooglePayJsonFactory.DisplayItem(
+                    label = "Tax",
+                    type = GooglePayJsonFactory.DisplayItem.Type.TAX,
+                    price = 500L,
+                ),
+            ),
+        )
+
+        val json = factory.createPaymentDataRequest(
+            transactionInfo = transactionInfo,
+            merchantInfo = GooglePayJsonFactory.MerchantInfo(),
+        )
+
+        val transactionInfoJson = json.getJSONObject("transactionInfo")
+        assertThat(transactionInfoJson.getString("currencyCode")).isEqualTo("USD")
+        assertThat(transactionInfoJson.getString("totalPrice")).isEqualTo("25.00")
+
+        val displayItemsArray = transactionInfoJson.getJSONArray("displayItems")
+        assertThat(displayItemsArray.length()).isEqualTo(2)
+
+        val item0 = displayItemsArray.getJSONObject(0)
+        assertThat(item0.getString("label")).isEqualTo("Widget")
+        assertThat(item0.getString("type")).isEqualTo("LINE_ITEM")
+        assertThat(item0.getString("price")).isEqualTo("20.00")
+
+        val item1 = displayItemsArray.getJSONObject(1)
+        assertThat(item1.getString("label")).isEqualTo("Tax")
+        assertThat(item1.getString("type")).isEqualTo("TAX")
+        assertThat(item1.getString("price")).isEqualTo("5.00")
+    }
+
+    @Test
+    fun `'transactionInfo' should not include displayItems when list is empty`() {
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+        )
+
+        val transactionInfo = GooglePayJsonFactory.TransactionInfo(
+            currencyCode = "USD",
+            totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Final,
+            countryCode = "US",
+            transactionId = null,
+            totalPrice = 1000L,
+            totalPriceLabel = null,
+            checkoutOption = null,
+            displayItems = emptyList(),
+        )
+
+        val json = factory.createPaymentDataRequest(
+            transactionInfo = transactionInfo,
+            merchantInfo = GooglePayJsonFactory.MerchantInfo(),
+        )
+
+        val transactionInfoJson = json.getJSONObject("transactionInfo")
+        assertThat(transactionInfoJson.has("displayItems")).isFalse()
+    }
+
+    @Test
+    fun `'transactionInfo' displayItems should format zero-decimal currencies correctly`() {
+        val factory = GooglePayJsonFactory(
+            googlePayConfig = googlePayConfig,
+        )
+
+        val transactionInfo = GooglePayJsonFactory.TransactionInfo(
+            currencyCode = "JPY",
+            totalPriceStatus = GooglePayJsonFactory.TransactionInfo.TotalPriceStatus.Final,
+            countryCode = "JP",
+            transactionId = null,
+            totalPrice = 1000L,
+            totalPriceLabel = null,
+            checkoutOption = null,
+            displayItems = listOf(
+                GooglePayJsonFactory.DisplayItem(
+                    label = "Item",
+                    type = GooglePayJsonFactory.DisplayItem.Type.LINE_ITEM,
+                    price = 800L,
+                ),
+                GooglePayJsonFactory.DisplayItem(
+                    label = "Discount",
+                    type = GooglePayJsonFactory.DisplayItem.Type.DISCOUNT,
+                    price = -200L,
+                ),
+            ),
+        )
+
+        val json = factory.createPaymentDataRequest(
+            transactionInfo = transactionInfo,
+            merchantInfo = GooglePayJsonFactory.MerchantInfo(),
+        )
+
+        val transactionInfoJson = json.getJSONObject("transactionInfo")
+        assertThat(transactionInfoJson.getString("totalPrice")).isEqualTo("1000")
+
+        val displayItemsArray = transactionInfoJson.getJSONArray("displayItems")
+        assertThat(displayItemsArray.length()).isEqualTo(2)
+
+        val item0 = displayItemsArray.getJSONObject(0)
+        assertThat(item0.getString("label")).isEqualTo("Item")
+        assertThat(item0.getString("type")).isEqualTo("LINE_ITEM")
+        assertThat(item0.getString("price")).isEqualTo("800")
+
+        val item1 = displayItemsArray.getJSONObject(1)
+        assertThat(item1.getString("label")).isEqualTo("Discount")
+        assertThat(item1.getString("type")).isEqualTo("DISCOUNT")
+        assertThat(item1.getString("price")).isEqualTo("-200")
+    }
+}
+
+@Parcelize
+private class FakeCardFundingFilter(
+    private val acceptCredit: Boolean = true,
+    private val acceptPrepaid: Boolean = true
+) : CardFundingFilter {
+    override fun isAccepted(cardFunding: CardFunding): Boolean {
+        return when (cardFunding) {
+            CardFunding.Credit -> acceptCredit
+            CardFunding.Prepaid -> acceptPrepaid
+            else -> true
+        }
+    }
+
+    override fun allowedFundingTypesDisplayMessage(): Int? = null
+}

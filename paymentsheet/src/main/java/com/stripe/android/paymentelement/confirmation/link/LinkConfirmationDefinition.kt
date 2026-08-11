@@ -1,0 +1,129 @@
+package com.stripe.android.paymentelement.confirmation.link
+
+import androidx.activity.result.ActivityResultCaller
+import androidx.lifecycle.LifecycleOwner
+import com.stripe.android.common.exception.stripeErrorMessage
+import com.stripe.android.link.LinkAccountUpdate
+import com.stripe.android.link.LinkActivityResult
+import com.stripe.android.link.LinkPaymentLauncher
+import com.stripe.android.link.account.LinkAccountHolder
+import com.stripe.android.link.account.LinkStore
+import com.stripe.android.paymentelement.confirmation.ConfirmationDefinition
+import com.stripe.android.paymentelement.confirmation.ConfirmationHandler
+import com.stripe.android.paymentelement.confirmation.EmptyConfirmationLauncherArgs
+import com.stripe.android.paymentelement.confirmation.PaymentMethodConfirmationOption
+import javax.inject.Inject
+
+internal class LinkConfirmationDefinition @Inject constructor(
+    private val linkPaymentLauncher: LinkPaymentLauncher,
+    private val linkStore: LinkStore,
+    private val linkAccountHolder: LinkAccountHolder,
+) : ConfirmationDefinition<
+    LinkConfirmationOption,
+    LinkPaymentLauncher,
+    EmptyConfirmationLauncherArgs,
+    LinkActivityResult
+    > {
+    override val key: String = "Link"
+
+    override fun option(confirmationOption: ConfirmationHandler.Option): LinkConfirmationOption? {
+        return confirmationOption as? LinkConfirmationOption
+    }
+
+    override fun createLauncher(
+        activityResultCaller: ActivityResultCaller,
+        lifecycleOwner: LifecycleOwner,
+        onResult: (LinkActivityResult) -> Unit
+    ): LinkPaymentLauncher {
+        return linkPaymentLauncher.apply {
+            register(activityResultCaller, onResult)
+        }
+    }
+
+    override fun unregister(launcher: LinkPaymentLauncher) {
+        launcher.unregister()
+    }
+
+    override suspend fun action(
+        confirmationOption: LinkConfirmationOption,
+        confirmationArgs: ConfirmationHandler.Args,
+    ): ConfirmationDefinition.Action<EmptyConfirmationLauncherArgs> {
+        return ConfirmationDefinition.Action.Launch(
+            launcherArguments = EmptyConfirmationLauncherArgs,
+            receivesResultInProcess = false,
+        )
+    }
+
+    override fun launch(
+        launcher: LinkPaymentLauncher,
+        arguments: EmptyConfirmationLauncherArgs,
+        confirmationOption: LinkConfirmationOption,
+        confirmationArgs: ConfirmationHandler.Args,
+    ) {
+        launcher.present(
+            configuration = confirmationOption.configuration,
+            paymentMethodMetadata = confirmationArgs.paymentMethodMetadata,
+            linkAccountInfo = linkAccountHolder.linkAccountInfo.value,
+            launchMode = confirmationOption.linkLaunchMode,
+            linkExpressMode = confirmationOption.linkExpressMode,
+            statusBarColor = confirmationArgs.statusBarColor,
+        )
+    }
+
+    override fun toResult(
+        confirmationOption: LinkConfirmationOption,
+        confirmationArgs: ConfirmationHandler.Args,
+        launcherArgs: EmptyConfirmationLauncherArgs,
+        result: LinkActivityResult
+    ): ConfirmationDefinition.Result {
+        if (
+            result !is LinkActivityResult.Canceled ||
+            result.reason != LinkActivityResult.Canceled.Reason.BackPressed
+        ) {
+            linkStore.markLinkAsUsed()
+        }
+
+        return when (result) {
+            is LinkActivityResult.PaymentMethodObtained -> {
+                ConfirmationDefinition.Result.NextStep(
+                    confirmationOption = PaymentMethodConfirmationOption.Saved(
+                        shippingInformation = null,
+                        paymentMethod = result.paymentMethod,
+                        optionsParams = null,
+                        originatedFromWallet = true,
+                    ),
+                    arguments = confirmationArgs,
+                )
+            }
+            is LinkActivityResult.Failed -> {
+                result.linkAccountUpdate.updateLinkAccount()
+                ConfirmationDefinition.Result.Failed(
+                    cause = result.error,
+                    message = result.error.stripeErrorMessage(),
+                    type = ConfirmationHandler.Result.Failed.ErrorType.Payment,
+                )
+            }
+            is LinkActivityResult.Canceled -> {
+                result.linkAccountUpdate.updateLinkAccount()
+                ConfirmationDefinition.Result.Canceled(
+                    action = ConfirmationHandler.Result.Canceled.Action.InformCancellation,
+                )
+            }
+            is LinkActivityResult.Completed -> {
+                result.linkAccountUpdate.updateLinkAccount()
+                ConfirmationDefinition.Result.Succeeded(
+                    intent = confirmationArgs.intent,
+                )
+            }
+        }
+    }
+
+    private fun LinkAccountUpdate.updateLinkAccount() {
+        when (this) {
+            is LinkAccountUpdate.Value -> {
+                linkAccountHolder.set(this)
+            }
+            LinkAccountUpdate.None -> Unit
+        }
+    }
+}

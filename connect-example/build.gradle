@@ -1,0 +1,95 @@
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+
+apply from: configs.androidApplication
+
+apply plugin: 'com.google.devtools.ksp'
+apply plugin: "org.jetbrains.kotlin.plugin.parcelize"
+apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+apply plugin: 'com.google.devtools.ksp'
+apply plugin: 'com.google.dagger.hilt.android'
+
+dependencies {
+    implementation project(':connect')
+    implementation project(':stripe-core')
+
+    // Kotlin
+    implementation libs.kotlin.coroutines
+    implementation libs.kotlin.coroutinesAndroid
+    implementation libs.kotlin.serialization
+
+    // Networking
+    implementation libs.fuel
+    implementation libs.fuelCoroutines
+
+    // AndroidX
+    implementation libs.androidx.activity
+    implementation libs.androidx.annotation
+    implementation libs.androidx.appCompat
+    implementation libs.androidx.browser
+    implementation libs.androidx.fragment
+    implementation libs.androidx.fragmentCompose
+    implementation libs.androidx.hiltNavigationCompose
+    implementation libs.androidx.lifecycle
+    implementation libs.androidx.savedState
+    implementation libs.androidx.viewModel
+
+    // Compose
+    implementation libs.compose.ui
+    implementation libs.compose.uiToolingPreview
+    implementation libs.compose.uiViewBinding
+    implementation libs.compose.foundation
+    implementation libs.compose.material
+    implementation libs.compose.activity
+    implementation libs.compose.navigation
+    implementation libs.accompanist.systemUiController
+    debugImplementation libs.compose.uiTooling
+
+    // DI
+    implementation libs.hilt.android
+    ksp libs.hilt.compiler
+
+    androidTestImplementation testLibs.androidx.composeUi
+    androidTestImplementation testLibs.androidx.coreKtx
+    androidTestImplementation testLibs.androidx.junit
+    androidTestImplementation testLibs.androidx.junitKtx
+    androidTestImplementation testLibs.androidx.testRules
+    androidTestImplementation testLibs.androidx.testRunner
+    androidTestImplementation testLibs.androidx.truth
+    androidTestImplementation testLibs.androidx.uiAutomator
+    androidTestImplementation testLibs.espresso.core
+    androidTestImplementation (testLibs.espresso.contrib) {
+        exclude group: 'org.checkerframework', module: 'checker'
+    }
+    androidTestImplementation testLibs.hilt.androidTesting
+    androidTestImplementation testLibs.testParameterInjector
+    androidTestImplementation testLibs.truth
+
+    androidTestUtil testLibs.testOrchestrator
+}
+
+android {
+    defaultConfig {
+        testApplicationId "com.stripe.android.connect.example.test"
+        testInstrumentationRunner "com.stripe.android.connect.example.ConnectExampleTestRunner"
+    }
+
+    buildFeatures {
+        compose = true
+        viewBinding true
+    }
+
+    kotlin {
+        compilerOptions {
+            freeCompilerArgs.addAll([
+                    "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi",
+                    "-opt-in=kotlinx.coroutines.FlowPreview",
+                    "-Xcontext-parameters",
+                    "-Xannotation-default-target=param-property"
+            ])
+            if (gradle.ext.isCi) {
+                allWarningsAsErrors = true
+            }
+        }
+    }
+}

@@ -1,0 +1,103 @@
+name: paymentsheet-example size diff
+on:
+  pull_request:
+    paths:
+      - 'payments/**'
+      - 'payments-core/**'
+      - 'payments-model/**'
+      - 'stripe-core/**'
+      - 'payments-model/**'
+      - 'payments-ui-core/**'
+      - 'link/**'
+      - 'dependencies.gradle'
+jobs:
+  # Checkout master branch and build the APK
+  build-master:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+      - uses: ./.github/actions/stripe_setup
+      - name: Build in master
+        run: ./gradlew :paymentsheet-example:assembleBaseRelease && mv paymentsheet-example/build/outputs/apk/base/release/paymentsheet-example-base-release.apk paymentsheet-example/build/outputs/apk/base/release/paymentsheet-example-release-master.apk
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: paymentsheet-base-apk
+          path: paymentsheet-example/build/outputs/apk/base/release/paymentsheet-example-release-master.apk
+
+  # Checkout PR branch and build the APK
+  build-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/stripe_setup
+      - name: Build from PR
+        run: ./gradlew :paymentsheet-example:assembleBaseRelease && mv paymentsheet-example/build/outputs/apk/base/release/paymentsheet-example-base-release.apk paymentsheet-example/build/outputs/apk/base/release/paymentsheet-example-release-pr.apk
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: paymentsheet-pr-apk
+          path: paymentsheet-example/build/outputs/apk/base/release/paymentsheet-example-release-pr.apk
+
+  # Execute Diffuse only when the two APKs are built successfully
+  diffuse:
+    needs: [build-master, build-pr]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download APKs
+        uses: actions/download-artifact@v8
+        with:
+          path: apk
+          pattern: paymentsheet-*-apk
+          merge-multiple: true
+      - name: diffuse
+        id: diffuse
+        uses: usefulness/diffuse-action@41995fe8ff6be0a8847e63bdc5a4679c704b455c
+        with:
+          old-file-path: apk/paymentsheet-example-release-master.apk
+          new-file-path: apk/paymentsheet-example-release-pr.apk
+
+      - name: Check size difference
+        id: size_check
+        run: |
+          old_size=$(stat -c%s "apk/paymentsheet-example-release-master.apk")
+          new_size=$(stat -c%s "apk/paymentsheet-example-release-pr.apk")
+          diff=$((new_size - old_size))
+          abs_diff=${diff#-}
+          echo "abs_diff=$abs_diff" >> "$GITHUB_OUTPUT"
+          echo "Size difference: $diff bytes (abs: $abs_diff)"
+
+      # Post comment with output
+
+      - uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad
+        id: find_comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-includes: Diffuse output
+
+      - uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9
+        if: ${{ (steps.diffuse.outputs.diff-raw != null || steps.find_comment.outputs.comment-id != null) && steps.size_check.outputs.abs_diff >= 20 }}
+        with:
+          body: |
+            Diffuse output:
+
+            ${{ steps.diffuse.outputs.diff-gh-comment }}
+          edit-mode: replace
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload diffuse output
+        uses: actions/upload-artifact@v7
+        with:
+          name: diffuse-output
+          path: ${{ steps.diffuse.outputs.diff-file }}

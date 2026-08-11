@@ -1,0 +1,14 @@
+apply from: configs.androidLibrary
+
+dependencies {
+    api testLibs.okhttpMockWebServer
+
+    implementation project(":payments-core")
+    implementation testLibs.junit
+    implementation testLibs.okhttpTls
+
+    testImplementation testLibs.junit
+    testImplementation testLibs.truth
+
+    androidTestImplementation project(':stripe-ui-core') // Resources defined here, but used in payments-core.
+}

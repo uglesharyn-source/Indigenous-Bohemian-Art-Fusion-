@@ -1,0 +1,225 @@
+package com.stripe.android.link.ui.inline
+
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import com.google.common.truth.Truth.assertThat
+import com.stripe.android.link.theme.DefaultLinkTheme
+import com.stripe.android.link.ui.signup.SignUpState
+import com.stripe.android.model.LinkBrand
+import com.stripe.android.testing.createComposeCleanupRule
+import com.stripe.android.uicore.elements.EmailConfig
+import com.stripe.android.uicore.elements.NameConfig
+import com.stripe.android.uicore.elements.PhoneNumberController
+import com.stripe.android.uicore.elements.SectionController
+import com.stripe.android.uicore.elements.SimpleTextFieldController
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+internal class LinkInlineSignupViewTest {
+    @get:Rule
+    val composeTestRule = createComposeRule()
+
+    @get:Rule
+    val composeCleanupRule = createComposeCleanupRule()
+
+    @Test
+    fun clicking_on_checkbox_triggers_callback() {
+        var count = 0
+        setContent(
+            expanded = false,
+            linkBrand = LinkBrand.Link,
+            toggleExpanded = {
+                count++
+            }
+        )
+
+        onEmailField().assertDoesNotExist()
+        onProgressIndicator().assertDoesNotExist()
+        onPhoneField().assertDoesNotExist()
+
+        onSaveMyInfo().performClick()
+
+        assertThat(count).isEqualTo(1)
+    }
+
+    @Test
+    fun status_inputting_email_shows_only_email_field() {
+        setContent(
+            signUpState = SignUpState.InputtingPrimaryField,
+            linkBrand = LinkBrand.Link,
+        )
+
+        onEmailField().assertExists()
+        onEmailField().assertIsEnabled()
+        onProgressIndicator().assertDoesNotExist()
+        onPhoneField().assertDoesNotExist()
+    }
+
+    @Test
+    fun status_inputting_phone_or_name_shows_all_fields_if_name_required() {
+        setContent(
+            signUpState = SignUpState.InputtingRemainingFields,
+            requiresNameCollection = true,
+            linkBrand = LinkBrand.Link,
+        )
+
+        onEmailField().assertExists()
+        onEmailField().assertIsEnabled()
+        onProgressIndicator().assertDoesNotExist()
+        onPhoneField().assertExists()
+        onPhoneField().assertIsEnabled()
+        onNameField().assertExists()
+        onNameField().assertIsEnabled()
+    }
+
+    @Test
+    fun status_inputting_phone_shows_only_phone_field_if_name_not_required() {
+        setContent(
+            signUpState = SignUpState.InputtingRemainingFields,
+            linkBrand = LinkBrand.Link,
+        )
+
+        onEmailField().assertExists()
+        onEmailField().assertIsEnabled()
+        onProgressIndicator().assertDoesNotExist()
+        onPhoneField().assertExists()
+        onPhoneField().assertIsEnabled()
+        onNameField().assertDoesNotExist()
+    }
+
+    @Test
+    fun when_error_message_not_null_in_state_InputtingPhoneOrName_then_it_is_visible() {
+        val errorMessage = "Error message"
+        setContent(
+            signUpState = SignUpState.InputtingRemainingFields,
+            errorMessage = errorMessage,
+            linkBrand = LinkBrand.Link,
+        )
+        composeTestRule.onNodeWithText(errorMessage).assertExists()
+    }
+
+    @Test
+    fun when_error_message_not_null_in_state_InputtingEmail_then_it_is_visible() {
+        val errorMessage = "Error message"
+        setContent(
+            signUpState = SignUpState.InputtingPrimaryField,
+            errorMessage = errorMessage,
+            linkBrand = LinkBrand.Link,
+        )
+        composeTestRule.onNodeWithText(errorMessage).assertExists()
+    }
+
+    @Test
+    fun checkbox_label_uses_link_brand_name_for_default_opt_in() {
+        setContent(
+            expanded = false,
+            allowsDefaultOptIn = true,
+            linkBrand = LinkBrand.Link,
+        )
+
+        composeTestRule
+            .onNodeWithText("Save my info for faster checkout with Link")
+            .assertExists()
+    }
+
+    @Test
+    fun checkbox_label_uses_onelink_brand_name_for_default_opt_in() {
+        setContent(
+            expanded = false,
+            allowsDefaultOptIn = true,
+            linkBrand = LinkBrand.Onelink,
+        )
+
+        composeTestRule
+            .onNodeWithText("Save my info for faster checkout with Onelink")
+            .assertExists()
+    }
+
+    @Test
+    fun terms_logo_content_description_uses_dynamic_brand_name() {
+        setContent(
+            expanded = true,
+            signUpState = SignUpState.InputtingRemainingFields,
+            linkBrand = LinkBrand.Onelink,
+        )
+
+        composeTestRule
+            .onNodeWithContentDescription("Onelink", useUnmergedTree = true)
+            .assertExists()
+    }
+
+    @Test
+    fun checkbox_text_logo_content_description_uses_dynamic_brand_name() {
+        setContent(
+            expanded = false,
+            linkSignUpOptInFeatureEnabled = true,
+            linkBrand = LinkBrand.Onelink,
+        )
+
+        composeTestRule
+            .onNodeWithContentDescription("Onelink", useUnmergedTree = true)
+            .assertExists()
+    }
+
+    private fun setContent(
+        merchantName: String = "Example, Inc.",
+        emailController: SimpleTextFieldController = EmailConfig.createController("email@me.co"),
+        phoneController: PhoneNumberController = PhoneNumberController.createPhoneNumberController(),
+        nameController: SimpleTextFieldController = NameConfig.createController(null),
+        signUpState: SignUpState = SignUpState.InputtingPrimaryField,
+        enabled: Boolean = true,
+        expanded: Boolean = true,
+        requiresNameCollection: Boolean = false,
+        allowsDefaultOptIn: Boolean = false,
+        linkSignUpOptInFeatureEnabled: Boolean = false,
+        linkBrand: LinkBrand,
+        didAskToChangeSignupDetails: Boolean = false,
+        errorMessage: String? = null,
+        toggleExpanded: () -> Unit = {},
+        changeSignupDetails: () -> Unit = {},
+    ) {
+        val sectionController = SectionController(
+            label = null,
+            sectionFieldValidationControllers = listOf(
+                emailController,
+                phoneController,
+                nameController,
+            ),
+        )
+        composeTestRule.setContent {
+            DefaultLinkTheme {
+                LinkInlineSignup(
+                    merchantName,
+                    sectionController,
+                    emailController,
+                    phoneController,
+                    nameController,
+                    signUpState,
+                    enabled,
+                    expanded,
+                    requiresNameCollection,
+                    allowsDefaultOptIn,
+                    linkSignUpOptInFeatureEnabled = linkSignUpOptInFeatureEnabled,
+                    linkBrand = linkBrand,
+                    didAskToChangeSignupDetails,
+                    errorMessage,
+                    toggleExpanded,
+                    changeSignupDetails,
+                )
+            }
+        }
+    }
+
+    private fun onEmailField() = composeTestRule.onNodeWithText("Email")
+    private fun onProgressIndicator() = composeTestRule.onNodeWithTag(ProgressIndicatorTestTag)
+    private fun onPhoneField() = composeTestRule.onNodeWithText("Phone number")
+    private fun onNameField() = composeTestRule.onNodeWithText("Full name")
+    private fun onSaveMyInfo() = composeTestRule.onNodeWithText("Save my info", substring = true)
+}

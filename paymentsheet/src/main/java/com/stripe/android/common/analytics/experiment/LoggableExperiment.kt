@@ -1,0 +1,119 @@
+package com.stripe.android.common.analytics.experiment
+
+import com.stripe.android.common.nfcscan.analytics.NfcScanningExperimentDimensions
+import com.stripe.android.lpmfoundations.paymentmethod.PaymentMethodMetadata
+import com.stripe.android.model.ElementsSession
+import com.stripe.android.model.ElementsSession.ExperimentAssignment
+import com.stripe.android.paymentsheet.analytics.EventReporter
+import com.stripe.android.utils.filterNotNullValues
+
+/**
+ * A base class for all experiments that are logged to Ursula.
+ */
+internal sealed class LoggableExperiment(
+    open val experiment: ExperimentAssignment,
+    open val arbId: String,
+    open val group: String,
+    open val dimensions: Map<String, String>
+) {
+
+    data class LinkHoldback(
+        override val arbId: String,
+        override val group: String,
+        override val experiment: ExperimentAssignment,
+        val isReturningLinkUser: Boolean,
+        val useLinkNative: Boolean,
+        val emailRecognitionSource: EmailRecognitionSource?,
+        val providedDefaultValues: ProvidedDefaultValues,
+        val spmEnabled: Boolean,
+        val integrationShape: String,
+        val linkDisplayed: Boolean,
+        val elementsSessionId: String,
+        val mobileSdkVersion: String,
+        val mobileSessionId: String
+    ) : LoggableExperiment(
+        arbId = arbId,
+        group = group,
+        experiment = experiment,
+        dimensions = mapOf(
+            "integration_type" to "mpe_android",
+            "is_returning_link_user" to isReturningLinkUser.toString(),
+            "dvs_provided" to providedDefaultValues.toDimension(),
+            "use_link_native" to useLinkNative.toString(),
+            "recognition_type" to emailRecognitionSource?.dimension,
+            "has_spms" to spmEnabled.toString(),
+            "integration_shape" to integrationShape,
+            "link_displayed" to linkDisplayed.toString(),
+            "mobile_sdk_version" to mobileSdkVersion,
+            "elements_session_id" to elementsSessionId,
+            "mobile_session_id" to mobileSessionId
+        ).filterNotNullValues()
+    ) {
+        enum class EmailRecognitionSource(val dimension: String) {
+            EMAIL("email"),
+        }
+
+        data class ProvidedDefaultValues(
+            val email: Boolean,
+            val name: Boolean,
+            val phone: Boolean,
+        ) {
+            fun toDimension(): String = listOfNotNull(
+                if (email) "email" else null,
+                if (name) "name" else null,
+                if (phone) "phone" else null
+            ).joinToString(" ")
+        }
+    }
+
+    data class ConnectionsFCLiteVsNative(
+        override val arbId: String,
+        override val group: String,
+        override val experiment: ExperimentAssignment,
+        val elementsSessionId: String,
+        val mobileSessionId: String,
+        val mobileSdkVersion: String,
+        val fcSdkAvailability: String,
+        val availableLpms: String,
+    ) : LoggableExperiment(
+        arbId = arbId,
+        group = group,
+        experiment = experiment,
+        dimensions = mapOf(
+            "elements_session_id" to elementsSessionId,
+            "mobile_session_id" to mobileSessionId,
+            "mobile_sdk_version" to mobileSdkVersion,
+            "fc_sdk_availability" to fcSdkAvailability,
+            "available_lpms" to availableLpms,
+        )
+    )
+
+    data class OcsMobilePaymentMethodMessagingPromotions(
+        val experimentsData: ElementsSession.ExperimentsData,
+        override val group: String,
+        val metadata: PaymentMethodMetadata,
+        val mode: EventReporter.Mode,
+        val layout: String,
+    ) : LoggableExperiment(
+        arbId = experimentsData.arbId,
+        experiment = ExperimentAssignment.OCS_MOBILE_PAYMENT_METHOD_MESSAGING_PROMOTIONS,
+        group = group,
+        dimensions = CommonElementsDimensions.getDimensions(metadata, mode) + mapOf(
+            "in_app_elements_layout" to layout,
+        ).filterNotNullValues()
+    )
+
+    data class OcsMobileNfcScanningFeatureHoldback(
+        val experimentsData: ElementsSession.ExperimentsData,
+        override val group: String,
+        val canUseNfcScanner: Boolean,
+        val metadata: PaymentMethodMetadata,
+        val mode: EventReporter.Mode,
+    ) : LoggableExperiment(
+        arbId = experimentsData.arbId,
+        experiment = ExperimentAssignment.OCS_MOBILE_NFC_SCANNING_FEATURE_HOLDBACK,
+        group = group,
+        dimensions = CommonElementsDimensions.getDimensions(metadata, mode) +
+            NfcScanningExperimentDimensions.getDimensions(canUseNfcScanner, metadata),
+    )
+}

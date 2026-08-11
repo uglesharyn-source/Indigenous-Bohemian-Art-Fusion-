@@ -1,0 +1,47 @@
+package com.stripe.android.lpmfoundations.paymentmethod
+
+import com.stripe.android.common.nfcscan.IsNfcScanningAvailable
+import com.stripe.android.common.taptoadd.TapToAddHelper
+import com.stripe.android.link.LinkConfigurationCoordinator
+import com.stripe.android.link.ui.inline.UserInput
+import com.stripe.android.model.PaymentMethodCreateParams
+import com.stripe.android.model.PaymentMethodExtraParams
+import com.stripe.android.model.PaymentMethodOptionsParams
+import com.stripe.android.paymentsheet.repositories.PaymentMethodMessagePromotionsHelper
+import com.stripe.android.ui.core.elements.AutomaticallyLaunchedCardScanFormDataHelper
+import com.stripe.android.uicore.elements.AutocompleteAddressInteractor
+import com.stripe.android.uicore.elements.FormElement
+
+internal fun PaymentMethodDefinition.formElements(
+    metadata: PaymentMethodMetadata = PaymentMethodMetadataFactory.create(),
+    paymentMethodCreateParams: PaymentMethodCreateParams? = null,
+    paymentMethodOptionsParams: PaymentMethodOptionsParams? = null,
+    paymentMethodExtraParams: PaymentMethodExtraParams? = null,
+    initialLinkUserInput: UserInput? = null,
+    linkConfigurationCoordinator: LinkConfigurationCoordinator? = null,
+    setAsDefaultMatchesSaveForFutureUse: Boolean = false,
+    autocompleteAddressInteractorFactory: AutocompleteAddressInteractor.Factory? = null,
+    automaticallyLaunchedCardScanFormDataHelper: AutomaticallyLaunchedCardScanFormDataHelper? = null,
+    tapToAddHelper: TapToAddHelper? = null,
+    isNfcScanningAvailable: IsNfcScanningAvailable? = null,
+    paymentMethodMessagePromotionsHelper: PaymentMethodMessagePromotionsHelper? = null
+): List<FormElement> {
+    return requireNotNull(
+        metadata.formElementsForCode(
+            code = type.code,
+            uiDefinitionFactoryArgumentsFactory = TestUiDefinitionFactoryArgumentsFactory.create(
+                paymentMethodCreateParams = paymentMethodCreateParams,
+                paymentMethodOptionsParams = paymentMethodOptionsParams,
+                paymentMethodExtraParams = paymentMethodExtraParams,
+                linkConfigurationCoordinator = linkConfigurationCoordinator,
+                autocompleteAddressInteractorFactory = autocompleteAddressInteractorFactory,
+                initialLinkUserInput = initialLinkUserInput,
+                setAsDefaultMatchesSaveForFutureUse = setAsDefaultMatchesSaveForFutureUse,
+                automaticallyLaunchedCardScanFormDataHelper = automaticallyLaunchedCardScanFormDataHelper,
+                tapToAddHelper = tapToAddHelper,
+                paymentMethodMessagePromotionsHelper = paymentMethodMessagePromotionsHelper,
+                isNfcScanningAvailable = isNfcScanningAvailable,
+            )
+        )
+    )
+}

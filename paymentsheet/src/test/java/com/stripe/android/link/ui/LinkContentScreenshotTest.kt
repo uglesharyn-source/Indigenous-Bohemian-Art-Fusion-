@@ -1,0 +1,118 @@
+package com.stripe.android.link.ui
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.Text
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import androidx.navigation.compose.rememberNavController
+import com.stripe.android.link.LinkScreen
+import com.stripe.android.link.LinkScreenContentBody
+import com.stripe.android.link.ScreenState
+import com.stripe.android.model.LinkBrand
+import com.stripe.android.paymentsheet.analytics.FakeEventReporter
+import com.stripe.android.screenshottesting.FontSize
+import com.stripe.android.screenshottesting.PaparazziRule
+import com.stripe.android.screenshottesting.SystemAppearance
+import com.stripe.android.uicore.elements.bottomsheet.rememberStripeBottomSheetState
+import kotlinx.coroutines.flow.MutableSharedFlow
+import org.junit.Rule
+import org.junit.Test
+
+internal class LinkContentScreenshotTest {
+    @get:Rule
+    val paparazziRule = PaparazziRule(
+        SystemAppearance.entries,
+        FontSize.entries,
+        boxModifier = Modifier
+            .padding(0.dp)
+            .fillMaxWidth(),
+    )
+
+    @Test
+    fun testLinkContentScreenHasOpaqueBackground() {
+        paparazziRule.snapshot {
+            val viewModelStoreOwner = object : ViewModelStoreOwner {
+                override val viewModelStore = ViewModelStore()
+            }
+            CompositionLocalProvider(LocalViewModelStoreOwner provides viewModelStoreOwner) {
+                val navController = rememberNavController()
+                Box {
+                    Text(
+                        modifier = Modifier
+                            .align(Alignment.TopStart),
+                        text = "Hello!"
+                    )
+                    LinkContent(
+                        modifier = Modifier,
+                        navController = navController,
+                        appBarState = LinkAppBarState(
+                            canNavigateBack = false,
+                            showHeader = true,
+                            title = null,
+                            isElevated = false,
+                            linkBrand = LinkBrand.Link,
+                        ),
+                        bottomSheetContent = null,
+                        initialDestination = LinkScreen.Loading,
+                        showBottomSheetContent = {},
+                        hideBottomSheetContent = {},
+                        handleViewAction = {},
+                        navigate = { _, _ -> },
+                        dismissWithResult = {},
+                        getLinkAccount = { null },
+                        onBackPressed = {},
+                        moveToWeb = {},
+                        goBack = {},
+                        changeEmail = {},
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun testLinkContentHasProperlyStyledLoadingIndicator() {
+        paparazziRule.snapshot {
+            val viewModelStoreOwner = object : ViewModelStoreOwner {
+                override val viewModelStore = ViewModelStore()
+            }
+
+            val bottomSheetState = rememberStripeBottomSheetState()
+            val eventReporter = FakeEventReporter()
+
+            CompositionLocalProvider(LocalViewModelStoreOwner provides viewModelStoreOwner) {
+                LinkScreenContentBody(
+                    bottomSheetState = bottomSheetState,
+                    screenState = ScreenState.FullScreen(initialDestination = LinkScreen.Loading),
+                    appBarState = LinkAppBarState(
+                        showHeader = true,
+                        canNavigateBack = false,
+                        title = null,
+                        isElevated = false,
+                        linkBrand = LinkBrand.Link,
+                    ),
+                    eventReporter = eventReporter,
+                    navigationChannel = MutableSharedFlow(),
+                    onNavBackStackEntryChanged = {},
+                    onBackPressed = {},
+                    onDismissClicked = {},
+                    navigate = { _, _ -> },
+                    dismiss = {},
+                    dismissWithResult = {},
+                    getLinkAccount = { null },
+                    handleViewAction = {},
+                    moveToWeb = {},
+                    goBack = {},
+                    changeEmail = {},
+                )
+            }
+        }
+    }
+}

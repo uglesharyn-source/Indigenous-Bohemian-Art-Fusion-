@@ -1,0 +1,77 @@
+package com.stripe.android.paymentelement.confirmation
+
+import com.stripe.android.model.PaymentMethodCreateParams
+import com.stripe.android.model.PaymentMethodExtraParams
+import com.stripe.android.model.PaymentMethodOptionsParams
+import com.stripe.android.model.ShippingInformation
+import com.stripe.android.paymentelement.confirmation.utils.updatedWithPmoSfu
+import com.stripe.android.paymentelement.confirmation.utils.updatedWithProductUsage
+import com.stripe.android.paymentsheet.PaymentSheet
+import kotlinx.parcelize.Parcelize
+
+internal sealed interface PaymentMethodConfirmationOption : ConfirmationHandler.Option {
+    val confirmationChallengeState: ConfirmationChallengeState
+    val optionsParams: PaymentMethodOptionsParams?
+
+    fun updatedForDeferredIntent(
+        intentConfiguration: PaymentSheet.IntentConfiguration,
+    ): PaymentMethodConfirmationOption
+
+    fun shouldSaveAsDefault(): Boolean = false
+
+    @Parcelize
+    data class Saved(
+        val paymentMethod: com.stripe.android.model.PaymentMethod,
+        override val optionsParams: PaymentMethodOptionsParams?,
+        val shippingInformation: ShippingInformation?,
+        val originatedFromWallet: Boolean = false,
+        override val confirmationChallengeState: ConfirmationChallengeState = ConfirmationChallengeState(),
+        val newPMTransformedForConfirmation: Boolean = false
+    ) : PaymentMethodConfirmationOption {
+        override fun updatedForDeferredIntent(
+            intentConfiguration: PaymentSheet.IntentConfiguration,
+        ): Saved {
+            val updatedOptionsParams = optionsParams.updatedWithPmoSfu(
+                code = paymentMethod.type?.code,
+                intentConfiguration = intentConfiguration,
+            )
+            return copy(
+                optionsParams = updatedOptionsParams,
+            )
+        }
+    }
+
+    @Parcelize
+    data class New(
+        val createParams: PaymentMethodCreateParams,
+        override val optionsParams: PaymentMethodOptionsParams?,
+        val extraParams: PaymentMethodExtraParams?,
+        val shouldSave: Boolean,
+        override val confirmationChallengeState: ConfirmationChallengeState = ConfirmationChallengeState(),
+    ) : PaymentMethodConfirmationOption {
+
+        override fun updatedForDeferredIntent(
+            intentConfiguration: PaymentSheet.IntentConfiguration,
+        ): New {
+            val updatedCreateParams = createParams.updatedWithProductUsage(intentConfiguration)
+            val updatedOptionsParams = optionsParams.updatedWithPmoSfu(
+                code = updatedCreateParams.typeCode,
+                intentConfiguration = intentConfiguration,
+            )
+            return copy(
+                createParams = updatedCreateParams,
+                optionsParams = updatedOptionsParams,
+            )
+        }
+
+        override fun shouldSaveAsDefault(): Boolean {
+            return when (extraParams) {
+                is PaymentMethodExtraParams.Card -> extraParams.setAsDefault == true
+                is PaymentMethodExtraParams.USBankAccount -> extraParams.setAsDefault == true
+                is PaymentMethodExtraParams.Link -> extraParams.setAsDefault == true
+                is PaymentMethodExtraParams.SepaDebit -> extraParams.setAsDefault == true
+                is PaymentMethodExtraParams.BacsDebit, null -> false
+            }
+        }
+    }
+}

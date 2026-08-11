@@ -1,0 +1,1834 @@
+package com.stripe.android.test.core
+
+import android.app.Activity
+import android.app.Application
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
+import androidx.compose.ui.test.junit4.ComposeTestRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
+import androidx.lifecycle.lifecycleScope
+import androidx.test.core.app.ActivityScenario
+import androidx.test.espresso.Espresso
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.IdlingPolicies
+import androidx.test.espresso.action.ViewActions.click
+import androidx.test.espresso.matcher.RootMatchers.isDialog
+import androidx.test.espresso.matcher.ViewMatchers.withText
+import androidx.test.espresso.web.sugar.Web.onWebView
+import androidx.test.espresso.web.webdriver.DriverAtoms.webClick
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiSelector
+import com.google.common.truth.Truth.assertThat
+import com.stripe.android.customersheet.ui.CUSTOMER_SHEET_CONFIRM_BUTTON_TEST_TAG
+import com.stripe.android.customersheet.ui.CUSTOMER_SHEET_SAVE_BUTTON_TEST_TAG
+import com.stripe.android.model.PaymentMethodCode
+import com.stripe.android.paymentelement.embedded.form.EMBEDDED_FORM_ACTIVITY_PRIMARY_BUTTON
+import com.stripe.android.paymentsheet.PaymentSheet
+import com.stripe.android.paymentsheet.example.playground.PaymentSheetPlaygroundActivity
+import com.stripe.android.paymentsheet.example.playground.PlaygroundState
+import com.stripe.android.paymentsheet.example.playground.SUCCESS_RESULT
+import com.stripe.android.paymentsheet.example.playground.activity.CustomPaymentMethodActivity
+import com.stripe.android.paymentsheet.example.playground.activity.FawryActivity
+import com.stripe.android.paymentsheet.example.playground.settings.CheckoutMode
+import com.stripe.android.paymentsheet.example.playground.settings.CheckoutModeSettingsDefinition
+import com.stripe.android.paymentsheet.example.playground.settings.CollectAddressSettingsDefinition
+import com.stripe.android.paymentsheet.example.playground.settings.CustomerSettingsDefinition
+import com.stripe.android.paymentsheet.example.playground.settings.CustomerType
+import com.stripe.android.paymentsheet.example.playground.settings.Layout
+import com.stripe.android.paymentsheet.example.playground.settings.LayoutSettingsDefinition
+import com.stripe.android.paymentsheet.example.playground.settings.Merchant
+import com.stripe.android.paymentsheet.example.playground.settings.MerchantSettingsDefinition
+import com.stripe.android.paymentsheet.example.playground.settings.PlaygroundConfigurationData
+import com.stripe.android.paymentsheet.example.playground.settings.RequireCvcRecollectionDefinition
+import com.stripe.android.paymentsheet.example.samples.ui.shared.CHECKOUT_TEST_TAG
+import com.stripe.android.paymentsheet.ui.PAYMENT_SHEET_ERROR_TEXT_TEST_TAG
+import com.stripe.android.paymentsheet.ui.SAVED_PAYMENT_METHOD_CARD_TEST_TAG
+import com.stripe.android.paymentsheet.ui.SAVED_PAYMENT_OPTION_TAB_LAYOUT_TEST_TAG
+import com.stripe.android.paymentsheet.verticalmode.TEST_TAG_NEW_PAYMENT_METHOD_ROW_BUTTON
+import com.stripe.android.paymentsheet.verticalmode.TEST_TAG_PAYMENT_METHOD_EMBEDDED_LAYOUT
+import com.stripe.android.paymentsheet.verticalmode.TEST_TAG_PAYMENT_METHOD_VERTICAL_LAYOUT
+import com.stripe.android.test.core.ui.BrowserUI
+import com.stripe.android.test.core.ui.ComposeButton
+import com.stripe.android.test.core.ui.Selectors
+import com.stripe.android.test.core.ui.UiAutomatorText
+import com.stripe.android.utils.awaitWindowFocus
+import kotlinx.coroutines.launch
+import org.junit.Assert.fail
+import org.junit.Assume.assumeFalse
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+
+/**
+ * This drives the end to end payment sheet flow for any set of
+ * [TestParameters].  It handles any authorization that needs to happen
+ * It drives the test from the test playground so that a payment
+ * intent does not need to be created.
+ *
+ * This does not yet work when the locale is not english.
+ * It works for all screen sizes
+ * It does not test every possible drop down parameter
+ */
+internal class PlaygroundTestDriver(
+    private val device: UiDevice,
+    private val composeTestRule: ComposeTestRule,
+) {
+    @Volatile
+    private var resultCountDownLatch: CountDownLatch? = null
+
+    @Volatile
+    private var resultValue: String? = null
+    private lateinit var testParameters: TestParameters
+    private lateinit var selectors: Selectors
+
+    @Volatile
+    private var currentActivity: Activity? = null
+    private var application: Application? = null
+
+    @Volatile
+    private var playgroundState: PlaygroundState? = null
+
+    private val activityLifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+        override fun onActivityStarted(activity: Activity) {}
+        override fun onActivityPaused(activity: Activity) {}
+        override fun onActivityStopped(activity: Activity) {}
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+        override fun onActivityDestroyed(activity: Activity) {
+            // Never keep a reference to a destroyed activity.
+            if (currentActivity === activity) {
+                currentActivity = null
+            }
+        }
+        override fun onActivityResumed(activity: Activity) {
+            currentActivity = activity
+        }
+    }
+
+    fun confirmCustom(
+        testParameters: TestParameters,
+        values: FieldPopulator.Values = FieldPopulator.Values(),
+        populateCustomLpmFields: FieldPopulator.() -> Unit = {},
+        verifyCustomLpmFields: FieldPopulator.() -> Unit = {},
+    ): PlaygroundState? {
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.FlowController
+                    )
+                }
+            }
+        )
+        launchCustom()
+
+        if (isSelectPaymentMethodScreen()) {
+            // When Link is enabled we get the select screen, but we want to go to the add screen
+            // and click the payment method.
+            addPaymentMethodNode().performClick()
+        }
+        clickPaymentSelection()
+
+        val fieldPopulator = FieldPopulator(
+            selectors,
+            testParameters,
+            populateCustomLpmFields,
+            verifyCustomLpmFields,
+            values,
+        )
+        fieldPopulator.populateFields()
+
+        val result = playgroundState
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        pressContinue()
+
+        pressMultiStepSelect()
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        fieldPopulator.verifyFields()
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmCustomAndBuy(
+        testParameters: TestParameters,
+        values: FieldPopulator.Values = FieldPopulator.Values(),
+        populateCustomLpmFields: FieldPopulator.() -> Unit = {},
+        customerId: String? = null
+    ): PlaygroundState? {
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.FlowController
+                    )
+                }
+
+                customerId?.let { id ->
+                    settings[CustomerSettingsDefinition] = CustomerType.Existing(id)
+                }
+            }
+        )
+        launchCustom()
+
+        if (isSelectPaymentMethodScreen()) {
+            // When Link is enabled we get the select screen, but we want to go to the add screen
+            // and click the payment method.
+            addPaymentMethodNode().performClick()
+        }
+        clickPaymentSelection()
+
+        val fieldPopulator = FieldPopulator(
+            selectors,
+            testParameters,
+            populateCustomLpmFields,
+            verifyCustomLpmFields = {},
+            values,
+        )
+        fieldPopulator.populateFields()
+
+        val result = playgroundState
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        pressContinue()
+
+        resultCountDownLatch = testParameters.countDownLatch()
+        selectors.playgroundBuyButton.click()
+
+        doAuthorization()
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmCustomWithDefaultSavedPaymentMethod(
+        customerId: String?,
+        testParameters: TestParameters,
+        beforeBuyAction: (Selectors) -> Unit = {},
+        afterBuyAction: (Selectors) -> Unit = {},
+    ) {
+        if (customerId == null) {
+            fail("No customer id")
+            return
+        }
+
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.FlowController
+                    )
+                }
+
+                settings[CustomerSettingsDefinition] = CustomerType.Existing(customerId)
+            }
+        )
+        launchCustom(clickMultiStep = false)
+
+        beforeBuyAction(selectors)
+
+        resultCountDownLatch = testParameters.countDownLatch()
+        selectors.playgroundBuyButton.click()
+
+        afterBuyAction(selectors)
+
+        doAuthorization()
+
+        teardown()
+    }
+
+    fun savePaymentMethodInCustomerSheet(
+        testParameters: TestParameters,
+        values: FieldPopulator.Values = FieldPopulator.Values(),
+        populateCustomLpmFields: FieldPopulator.() -> Unit = {},
+    ): PlaygroundState? {
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.CustomerSheet
+                    )
+                }
+            }
+        )
+
+        launchCustomerSheet()
+
+        clickPaymentSelection()
+
+        val fieldPopulator = FieldPopulator(
+            selectors,
+            testParameters,
+            populateCustomLpmFields,
+            {},
+            values,
+        )
+        fieldPopulator.populateFields()
+
+        val result = playgroundState
+
+        pressCustomerSheetSave()
+
+        doAuthorization()
+
+        pressCustomerSheetConfirm()
+
+        teardown()
+
+        return result
+    }
+
+    fun saveUsBankAccountInCustomerSheet(
+        financialConnectionsLiteEnabled: Boolean,
+        testParameters: TestParameters,
+        values: FieldPopulator.Values = FieldPopulator.Values(),
+        populateCustomLpmFields: FieldPopulator.() -> Unit = {},
+    ): PlaygroundState? {
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.CustomerSheet
+                    )
+                }
+            }
+        )
+
+        launchCustomerSheet()
+
+        clickPaymentSelection()
+
+        val fieldPopulator = FieldPopulator(
+            selectors,
+            testParameters,
+            populateCustomLpmFields,
+            {},
+            values,
+        )
+        fieldPopulator.populateFields()
+
+        // Verify device requirements are met prior to attempting confirmation.
+        verifyDeviceSupportsTestAuthorization(testParameters.authorizationAction)
+
+        val result = playgroundState
+
+        pressCustomerSheetSave()
+
+        if (financialConnectionsLiteEnabled) {
+            executeUsBankAccountLiteFlow()
+        } else {
+            executeUsBankAccountFlow()
+        }
+
+        waitForCustomerSheetSaveButton()
+
+        pressCustomerSheetSave()
+
+        waitForCustomerSheetConfirmButton()
+
+        pressCustomerSheetConfirm()
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmWithGooglePay(
+        merchant: Merchant,
+        checkoutMode: CheckoutMode = CheckoutMode.PAYMENT,
+    ) {
+        setup(
+            TestParameters.create(
+                paymentMethodCode = "card",
+            ) { settings ->
+                settings[MerchantSettingsDefinition] = merchant
+                settings[CheckoutModeSettingsDefinition] = checkoutMode
+            }
+        )
+
+        launchComplete()
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        selectors.googlePayButton.waitForEnabled()
+        selectors.googlePayButton.click()
+
+        selectors.googlePaySheet.waitFor()
+        selectors.googlePayCheckoutButton.click()
+
+        composeTestRule.waitForIdle()
+
+        // Skips the full screen payment animation in `PaymentSheet`
+        while (currentActivity !is PaymentSheetPlaygroundActivity) {
+            composeTestRule.mainClock.advanceTimeByFrame()
+        }
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        teardown()
+    }
+
+    private fun pressMultiStepSelect() {
+        selectors.multiStepSelect.click()
+        waitForNotPlaygroundActivity()
+    }
+
+    private fun pressContinue(waitForPlayground: Boolean = true) {
+        selectors.continueButton.click()
+        if (waitForPlayground) {
+            waitForPlaygroundActivity()
+        }
+    }
+
+    private fun pressCustomerSheetSave() {
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        selectors.customerSheetSaveButton.click()
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+    }
+
+    private fun pressCustomerSheetConfirm() {
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        selectors.customerSheetConfirmButton.click()
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+    }
+
+    fun loadComplete(
+        testParameters: TestParameters,
+        isReturningCustomer: Boolean,
+    ) {
+        setup(testParameters)
+        launchComplete()
+
+        if (isReturningCustomer) {
+            waitForSavedPaymentMethodScreen()
+        } else {
+            selectors.formElement.waitFor()
+        }
+
+        teardown()
+    }
+
+    private fun waitForSavedPaymentMethodScreen() {
+        selectors.composeTestRule.waitUntil(DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            selectors.composeTestRule.onAllNodes(
+                hasTestTag(SAVED_PAYMENT_OPTION_TAB_LAYOUT_TEST_TAG)
+            ).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+        }
+    }
+
+    /**
+     * This will open the payment sheet complete flow from the playground with a new or
+     * guest user and complete the confirmation including any browser interactions.
+     *
+     * A test calling this takes about 25s on average to run.
+     */
+    fun confirmNewOrGuestComplete(
+        testParameters: TestParameters,
+        values: FieldPopulator.Values? = FieldPopulator.Values(),
+        afterAuthorization: (Selectors) -> Unit = {},
+        populateCustomLpmFields: FieldPopulator.() -> Unit = {},
+    ): PlaygroundState? {
+        setup(testParameters)
+        launchComplete()
+
+        if (testParameters.playgroundSettingsSnapshot[LayoutSettingsDefinition] != Layout.HORIZONTAL) {
+            selectLpmInVerticalMode(testParameters.paymentMethodCode)
+        } else {
+            clickPaymentSelection()
+        }
+
+        if (values != null) {
+            FieldPopulator(
+                selectors,
+                testParameters,
+                populateCustomLpmFields,
+                verifyCustomLpmFields = {},
+                values = values,
+            ).populateFields()
+        }
+
+        // Verify device requirements are met prior to attempting confirmation.  Do this
+        // after we have had the chance to capture a screenshot.
+        verifyDeviceSupportsTestAuthorization(testParameters.authorizationAction)
+
+        val result = playgroundState
+
+        pressBuy()
+
+        doAuthorization()
+
+        afterAuthorization(selectors)
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmEmbedded(
+        testParameters: TestParameters,
+        values: FieldPopulator.Values? = FieldPopulator.Values(),
+        afterAuthorization: (Selectors) -> Unit = {},
+        populateCustomLpmFields: FieldPopulator.() -> Unit = {},
+    ): PlaygroundState? {
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.Embedded
+                    )
+                }
+            }
+        )
+        launchEmbedded()
+
+        selectLpmInEmbeddedMode(testParameters.paymentMethodCode)
+
+        if (values != null) {
+            FieldPopulator(
+                selectors,
+                testParameters,
+                populateCustomLpmFields,
+                verifyCustomLpmFields = {},
+                values = values,
+            ).populateFields()
+        }
+
+        // Verify device requirements are met prior to attempting confirmation.  Do this
+        // after we have had the chance to capture a screenshot.
+        verifyDeviceSupportsTestAuthorization(testParameters.authorizationAction)
+
+        val result = playgroundState
+
+        if (values != null) {
+            selectors.embeddedFormBuyButton.waitForEnabled(requireClickAction = false)
+            selectors.embeddedFormBuyButton.click()
+        } else {
+            selectors.complete.click()
+        }
+
+        doAuthorization()
+
+        afterAuthorization(selectors)
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmEmbeddedUsBankAccount(
+        testParameters: TestParameters,
+        values: FieldPopulator.Values = FieldPopulator.Values(),
+    ): PlaygroundState? {
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.Embedded
+                    )
+                }
+            }
+        )
+        launchEmbedded()
+
+        selectLpmInEmbeddedMode(testParameters.paymentMethodCode)
+
+        FieldPopulator(
+            selectors,
+            testParameters,
+            populateCustomLpmFields = {},
+            verifyCustomLpmFields = {},
+            values = values,
+        ).populateFields()
+
+        // Verify device requirements are met prior to attempting confirmation.  Do this
+        // after we have had the chance to capture a screenshot.
+        verifyDeviceSupportsTestAuthorization(testParameters.authorizationAction)
+
+        val result = playgroundState
+
+        selectors.embeddedFormBuyButton.click()
+
+        doUSBankAccountAuthorization(testParameters.authorizationAction)
+
+        selectors.embeddedFormBuyButton.waitForEnabled(requireClickAction = false)
+        selectors.embeddedFormBuyButton.click()
+        finishAfterAuthorization()
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmExistingComplete(
+        customerId: String?,
+        testParameters: TestParameters,
+        values: FieldPopulator.Values = FieldPopulator.Values(),
+        beforeBuyAction: (Selectors) -> Unit = {},
+        afterBuyAction: (Selectors) -> Unit = {},
+        populateCustomLpmFields: FieldPopulator.() -> Unit = {},
+    ): PlaygroundState? {
+        if (customerId == null) {
+            fail("No customer id")
+            return playgroundState
+        }
+
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings[CustomerSettingsDefinition] = CustomerType.Existing(customerId)
+            }
+        )
+        launchComplete()
+
+        waitForAddPaymentMethodNode()
+        addPaymentMethodNode().performClick()
+
+        clickPaymentSelection()
+
+        FieldPopulator(
+            selectors,
+            testParameters,
+            populateCustomLpmFields,
+            verifyCustomLpmFields = {},
+            values = values,
+        ).populateFields()
+
+        // Verify device requirements are met prior to attempting confirmation.  Do this
+        // after we have had the chance to capture a screenshot.
+        verifyDeviceSupportsTestAuthorization(testParameters.authorizationAction)
+
+        val result = playgroundState
+
+        beforeBuyAction(selectors)
+
+        pressBuy()
+
+        doAuthorization()
+
+        afterBuyAction(selectors)
+
+        teardown()
+
+        return result
+    }
+
+    /**
+     * This will open the payment sheet complete flow from the playground with an existing
+     * user and complete the confirmation including any browser interactions.
+     */
+    fun confirmCompleteWithDefaultSavedPaymentMethod(
+        customerId: String?,
+        testParameters: TestParameters,
+        beforeBuyAction: (Selectors) -> Unit = {},
+        afterBuyAction: (Selectors) -> Unit = {},
+    ): PlaygroundState? {
+        if (customerId == null) {
+            fail("No customer id")
+            return playgroundState
+        }
+
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings[CustomerSettingsDefinition] = CustomerType.Existing(customerId)
+            }
+        )
+        launchComplete()
+
+        val result = playgroundState
+
+        beforeBuyAction(selectors)
+
+        pressBuy()
+
+        doAuthorization()
+
+        afterBuyAction(selectors)
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmCompleteWithSavePaymentMethodAndCvcRecollection(
+        customerId: String?,
+        testParameters: TestParameters
+    ): PlaygroundState? {
+        if (customerId == null) {
+            fail("No customer id")
+            return playgroundState
+        }
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings[CustomerSettingsDefinition] = CustomerType.Existing(customerId)
+                settings[RequireCvcRecollectionDefinition] = true
+            }
+        )
+        launchComplete()
+
+        selectors.getCardCvc()
+            .performScrollTo().performTextInput("123")
+
+        val result = playgroundState
+
+        pressBuy()
+
+        doAuthorization()
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmCustomWithSavePaymentMethodAndCvcRecollection(
+        customerId: String?,
+        testParameters: TestParameters
+    ): PlaygroundState? {
+        if (customerId == null) {
+            fail("No customer id")
+            return playgroundState
+        }
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings[CustomerSettingsDefinition] = CustomerType.Existing(customerId)
+                settings[RequireCvcRecollectionDefinition] = true
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.FlowController
+                    )
+                }
+            }
+        )
+
+        launchCustom(false)
+
+        resultCountDownLatch = testParameters.countDownLatch()
+        selectors.playgroundBuyButton.click()
+
+        selectors.getCardCvc().performTextInput("123")
+
+        selectors.getCvcRecollectionScreenConfirm().performClick()
+
+        val result = playgroundState
+
+        doAuthorization()
+
+        teardown()
+
+        return result
+    }
+
+    fun confirmExternalPaymentMethodSuccess(
+        testParameters: TestParameters,
+    ) {
+        setup(testParameters)
+        launchComplete()
+
+        confirmExternalOrCustomPaymentMethod(
+            selectors.externalPaymentMethodSucceedButton,
+        )
+
+        waitForPlaygroundActivity()
+
+        assertThat(resultValue).isEqualTo(SUCCESS_RESULT)
+
+        teardown()
+    }
+
+    fun confirmExternalPaymentMethodCanceled(
+        testParameters: TestParameters,
+    ) {
+        setup(testParameters)
+        launchComplete()
+
+        confirmExternalOrCustomPaymentMethod(
+            selectors.externalPaymentMethodCancelButton,
+        )
+
+        isSelectPaymentMethodScreen()
+        selectors.buyButton.isEnabled()
+
+        teardown()
+    }
+
+    fun confirmExternalPaymentMethodFailed(
+        testParameters: TestParameters,
+    ) {
+        setup(testParameters)
+        launchComplete()
+
+        confirmExternalOrCustomPaymentMethod(
+            selectors.externalPaymentMethodFailButton,
+        )
+
+        composeTestRule.waitUntil(timeoutMillis = DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule
+                .onAllNodes(hasTestTag(PAYMENT_SHEET_ERROR_TEXT_TEST_TAG).and(hasText(FawryActivity.FAILED_DISPLAY_MESSAGE)))
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isNotEmpty()
+        }
+
+        teardown()
+    }
+
+    fun confirmCustomPaymentMethodSuccess(
+        testParameters: TestParameters,
+    ) {
+        setup(testParameters)
+        launchComplete()
+
+        confirmExternalOrCustomPaymentMethod(
+            selectors.customPaymentMethodSucceedButton,
+        )
+
+        waitForPlaygroundActivity()
+
+        assertThat(resultValue).isEqualTo(SUCCESS_RESULT)
+
+        teardown()
+    }
+
+    fun confirmCustomPaymentMethodCanceled(
+        testParameters: TestParameters,
+    ) {
+        setup(testParameters)
+        launchComplete()
+
+        confirmExternalOrCustomPaymentMethod(
+            selectors.customPaymentMethodCancelButton,
+        )
+
+        isSelectPaymentMethodScreen()
+        selectors.buyButton.waitProcessingComplete()
+        selectors.buyButton.isEnabled()
+
+        teardown()
+    }
+
+    fun confirmCustomPaymentMethodFailed(
+        testParameters: TestParameters,
+    ) {
+        setup(testParameters)
+        launchComplete()
+
+        confirmExternalOrCustomPaymentMethod(
+            selectors.customPaymentMethodFailButton,
+        )
+
+        composeTestRule.waitUntil(timeoutMillis = DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule
+                .onAllNodes(
+                    hasTestTag(PAYMENT_SHEET_ERROR_TEXT_TEST_TAG)
+                        .and(hasText(CustomPaymentMethodActivity.FAILED_DISPLAY_MESSAGE))
+                )
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isNotEmpty()
+        }
+
+        teardown()
+    }
+
+    private fun confirmExternalOrCustomPaymentMethod(
+        button: ComposeButton,
+    ) {
+        clickPaymentSelection()
+
+        pressBuy()
+
+        button.waitForEnabled()
+        button.click()
+    }
+
+    fun confirmUSBankAccount(
+        financialConnectionsLiteEnabled: Boolean,
+        testParameters: TestParameters,
+        afterAuthorization: (Selectors, FieldPopulator) -> Unit = { _, _ -> },
+    ): PlaygroundState? {
+        return confirmBankAccount(
+            testParameters = testParameters,
+            executeFlow = {
+                if (financialConnectionsLiteEnabled) {
+                    doUSBankAccountLiteAuthorization(testParameters.authorizationAction)
+                } else {
+                    doUSBankAccountAuthorization(testParameters.authorizationAction)
+                }
+            },
+            afterCollectingBankInfo = afterAuthorization,
+            confirmIntent = true,
+        )
+    }
+
+    fun confirmCustomUSBankAccountAndBuy(
+        testParameters: TestParameters,
+    ) {
+        confirmBankAccountInCustomFlow(
+            testParameters = testParameters,
+            executeFlow = { doUSBankAccountAuthorization(testParameters.authorizationAction) },
+            afterCollectingBankInfo = {
+                composeTestRule.waitUntil { selectors.buyButton.checkEnabled() }
+                selectors.buyButton.click()
+                selectors.playgroundBuyButton.apply {
+                    waitFor(isEnabled())
+                    click()
+                }
+                resultCountDownLatch = testParameters.countDownLatch()
+                finishAfterAuthorization()
+            }
+        )
+    }
+
+    fun signUpForLink(
+        testParameters: TestParameters,
+    ) {
+        confirmNewOrGuestComplete(
+            testParameters = testParameters,
+            populateCustomLpmFields = {
+                populateCardDetails()
+            },
+        )
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    fun confirmWithBankAccountInLink(
+        testParameters: TestParameters,
+    ) {
+        setup(testParameters)
+
+        launchComplete()
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        // Expect the OTP dialog
+        composeTestRule.waitUntilExactlyOneExists(
+            matcher = hasTestTag("OTP-0"),
+            timeoutMillis = DEFAULT_UI_TIMEOUT.inWholeMilliseconds,
+        )
+
+        composeTestRule
+            .onNodeWithTag("OTP-0")
+            .performTextInput("000000")
+
+        composeTestRule.waitUntilExactlyOneExists(
+            matcher = hasTestTag("collapsed_wallet_row_tag"),
+            timeoutMillis = DEFAULT_UI_TIMEOUT.inWholeMilliseconds,
+        )
+
+        composeTestRule
+            .onNodeWithTag("collapsed_wallet_row_tag")
+            .performClick()
+
+        composeTestRule.waitForIdle()
+
+        // We might have more than one bank account
+        composeTestRule
+            .onAllNodesWithText("Success")
+            .onFirst()
+            .performScrollTo()
+            .performClick()
+
+        composeTestRule
+            .onNodeWithTag("wallet_screen_pay_button")
+            .performClick()
+
+        composeTestRule.waitForIdle()
+
+        // Skips the full screen payment animation in `PaymentSheet`
+        while (currentActivity !is PaymentSheetPlaygroundActivity) {
+            composeTestRule.mainClock.advanceTimeByFrame()
+        }
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        teardown()
+    }
+
+    fun confirmLinkBankPayment(
+        testParameters: TestParameters,
+        afterAuthorization: (Selectors, FieldPopulator) -> Unit = { _, _ -> },
+    ): PlaygroundState? {
+        return confirmBankAccount(
+            testParameters = testParameters,
+            executeFlow = { doInstantDebitsFlow(testParameters.authorizationAction) },
+            afterCollectingBankInfo = afterAuthorization,
+            confirmIntent = testParameters.authorizationAction == null,
+        )
+    }
+
+    private fun confirmBankAccount(
+        testParameters: TestParameters,
+        executeFlow: () -> Unit,
+        afterCollectingBankInfo: (Selectors, FieldPopulator) -> Unit = { _, _ -> },
+        confirmIntent: Boolean,
+    ): PlaygroundState? {
+        setup(testParameters)
+        launchComplete()
+
+        clickPaymentSelection()
+
+        val populator = FieldPopulator(
+            selectors = selectors,
+            testParameters = testParameters,
+            populateCustomLpmFields = {},
+            verifyCustomLpmFields = {},
+            values = FieldPopulator.Values(),
+        )
+
+        populator.populateFields()
+
+        // Verify device requirements are met prior to attempting confirmation.  Do this
+        // after we have had the chance to capture a screenshot.
+        verifyDeviceSupportsTestAuthorization(testParameters.authorizationAction)
+
+        val result = playgroundState
+
+        val paymentSheetActivity = checkNotNull(currentActivity) {
+            "PaymentSheet activity was not resumed before bank account collection"
+        }
+
+        pressBuy()
+
+        executeFlow()
+
+        composeTestRule.waitUntil(
+            conditionDescription = "PaymentSheet to resume after bank account collection",
+            timeoutMillis = FINANCIAL_CONNECTIONS_COMPLETION_TIMEOUT.inWholeMilliseconds,
+        ) {
+            currentActivity === paymentSheetActivity
+        }
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        afterCollectingBankInfo(selectors, populator)
+
+        if (confirmIntent) {
+            pressBuy()
+            finishAfterAuthorization()
+        }
+
+        teardown()
+
+        return result
+    }
+
+    private fun confirmBankAccountInCustomFlow(
+        testParameters: TestParameters,
+        executeFlow: PlaygroundTestDriver.() -> Unit,
+        afterCollectingBankInfo: (Selectors) -> Unit = {},
+    ) {
+        setup(
+            testParameters.copyPlaygroundSettings { settings ->
+                settings.updateConfigurationData { configurationData ->
+                    configurationData.copy(
+                        integrationType = PlaygroundConfigurationData.IntegrationType.FlowController
+                    )
+                }
+            }
+        )
+        launchCustom()
+
+        if (isSelectPaymentMethodScreen()) {
+            // When Link is enabled we get the select screen, but we want to go to the add screen
+            // and click the payment method.
+            addPaymentMethodNode().performClick()
+        }
+        clickPaymentSelection()
+
+        FieldPopulator(
+            selectors = selectors,
+            testParameters = testParameters,
+            populateCustomLpmFields = {},
+            verifyCustomLpmFields = {},
+            values = FieldPopulator.Values(),
+        ).populateFields()
+
+        // Verify device requirements are met prior to attempting confirmation.  Do this
+        // after we have had the chance to capture a screenshot.
+        verifyDeviceSupportsTestAuthorization(testParameters.authorizationAction)
+
+        pressContinue(waitForPlayground = false)
+
+        this.executeFlow()
+
+        afterCollectingBankInfo(selectors)
+
+        teardown()
+    }
+
+    private fun pressBuy() {
+        selectors.buyButton.click()
+    }
+
+    private fun clickPaymentSelection() {
+        selectors.formElement.waitFor()
+        selectors.paymentSelection.click()
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+    }
+
+    private fun selectLpmInVerticalMode(paymentMethodCode: PaymentMethodCode) {
+        composeTestRule.waitUntil(DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule
+                .onAllNodes(hasTestTag(TEST_TAG_PAYMENT_METHOD_VERTICAL_LAYOUT))
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isNotEmpty()
+        }
+
+        composeTestRule.onNode(hasTestTag("${TEST_TAG_NEW_PAYMENT_METHOD_ROW_BUTTON}_$paymentMethodCode"))
+            .performScrollTo()
+            .performClick()
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+    }
+
+    private fun selectLpmInEmbeddedMode(paymentMethodCode: PaymentMethodCode) {
+        composeTestRule.waitUntil(DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule
+                .onAllNodes(hasTestTag(TEST_TAG_PAYMENT_METHOD_EMBEDDED_LAYOUT))
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isNotEmpty()
+        }
+
+        composeTestRule.onNode(hasTestTag("${TEST_TAG_NEW_PAYMENT_METHOD_ROW_BUTTON}_$paymentMethodCode"))
+            .performScrollTo()
+            .performClick()
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+    }
+
+    private fun waitUntilPrimaryButtonIsCompleted() {
+        composeTestRule.waitUntil(DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule.onAllNodesWithTag(EMBEDDED_FORM_ACTIVITY_PRIMARY_BUTTON)
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isEmpty()
+        }
+
+        composeTestRule.waitForIdle()
+        Espresso.onIdle()
+    }
+
+    private fun waitUntilCheckoutButtonIsGone() {
+        composeTestRule.waitUntil(DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule.onAllNodesWithTag(CHECKOUT_TEST_TAG)
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isEmpty()
+        }
+
+        composeTestRule.waitForIdle()
+        Espresso.onIdle()
+    }
+
+    private fun awaitActivity(
+        description: String,
+        timeout: Duration = ACTIVITY_TRANSITION_TIMEOUT,
+        onPoll: () -> Unit = {},
+        predicate: (Activity?) -> Boolean,
+    ) {
+        val deadline = System.currentTimeMillis() + timeout.inWholeMilliseconds
+        while (!predicate(currentActivity)) {
+            check(System.currentTimeMillis() < deadline) {
+                "Timed out after $timeout waiting for $description; " +
+                    "current activity was ${currentActivity?.javaClass?.name}"
+            }
+            onPoll()
+            TimeUnit.MILLISECONDS.sleep(ACTIVITY_POLL_INTERVAL_MS)
+        }
+    }
+
+    private fun awaitActivityClass(className: String) {
+        awaitActivity(description = className) { it?.javaClass?.name == className }
+    }
+
+    /**
+     * Here we wait for an activity different from the playground to be in view.  We
+     * don't specifically look for PaymentSheetActivity or PaymentOptionsActivity because
+     * that would require exposing the activities publicly.
+     */
+    private fun waitForNotPlaygroundActivity() {
+        awaitActivity(description = "an activity other than the playground") {
+            it !is PaymentSheetPlaygroundActivity
+        }
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+    }
+
+    /**
+     * Here we wait for the Playground to come back into view.
+     */
+    private fun waitForPlaygroundActivity() {
+        awaitActivity(
+            description = "the playground activity to return to the foreground",
+            onPoll = { composeTestRule.waitForIdle() },
+        ) { it is PaymentSheetPlaygroundActivity }
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+        if (!awaitWindowFocus()) {
+            // Returning from a browser/external activity can leave no window focused. Fail fast with a
+            // clear message here instead of surfacing as an opaque Espresso RootViewPicker timeout later.
+            error("Playground did not regain window focus after returning from an external activity")
+        }
+    }
+
+    /**
+     * Here we wait for PollingActivity to first come into view then wait for it to go away by checking if the Approve payment text is there
+     */
+    private fun waitForPollingToFinish(timeout: Duration = 60.seconds) {
+        val className =
+            "com.stripe.android.paymentsheet.paymentdatacollection.polling.PollingActivity"
+        awaitActivity(description = className) { it?.componentName?.className == className }
+
+        composeTestRule.waitUntil(timeoutMillis = timeout.inWholeMilliseconds) {
+            try {
+                composeTestRule
+                    .onAllNodesWithText("Approve payment")
+                    .fetchSemanticsNodes()
+                    .isEmpty()
+            } catch (_: IllegalStateException) {
+                // PollingActivity was closed
+                true
+            }
+        }
+    }
+
+    private fun verifyDeviceSupportsTestAuthorization(authorizeAction: AuthorizeAction?) {
+        if (authorizeAction == AuthorizeAction.DisplayQrCode) {
+            // Tests fail on pixel 2 API 26.
+            assumeFalse("walleye + 26" == "${Build.DEVICE} + ${Build.VERSION.SDK_INT}")
+        }
+    }
+
+    private fun getBrowser(requestedBrowser: BrowserUI?): BrowserUI {
+        val installedBrowsers = selectors.getInstalledBrowsers()
+
+        return requestedBrowser ?: installedBrowsers.first()
+    }
+
+    private fun monitorCurrentActivity(application: Application) {
+        this.application = application
+        // Unregister first so retried attempts (e.g. RetryRule) don't stack callbacks.
+        application.unregisterActivityLifecycleCallbacks(activityLifecycleCallbacks)
+        application.registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
+    }
+
+    private fun launchComplete() {
+        selectors.reload.click()
+        selectors.complete.waitForEnabled(
+            requireClickAction = true,
+            timeout = CHECKOUT_PREPARATION_TIMEOUT,
+        )
+        selectors.complete.click()
+
+        // PaymentSheetActivity is now on screen
+        waitForNotPlaygroundActivity()
+    }
+
+    private fun launchCustom(clickMultiStep: Boolean = true) {
+        selectors.reload.click()
+        Espresso.onIdle()
+        selectors.composeTestRule.waitForIdle()
+
+        selectors.multiStepSelect.waitForEnabled(
+            requireClickAction = true,
+            timeout = CHECKOUT_PREPARATION_TIMEOUT,
+        )
+        if (clickMultiStep) {
+            selectors.multiStepSelect.click()
+
+            // PaymentOptionsActivity is now on screen
+            waitForNotPlaygroundActivity()
+        }
+    }
+
+    private fun launchEmbedded() {
+        selectors.reload.click()
+        selectors.complete.waitForEnabled()
+        selectors.complete.click()
+
+        // EmbeddedPlaygroundActivity is now on screen.
+        waitForNotPlaygroundActivity()
+    }
+
+    private fun launchCustomerSheet() {
+        selectors.reload.click()
+        Espresso.onIdle()
+        selectors.composeTestRule.waitForIdle()
+
+        selectors.multiStepSelect.waitForEnabled()
+        selectors.multiStepSelect.click()
+
+        waitForNotPlaygroundActivity()
+    }
+
+    private fun doAuthorization() {
+        selectors.apply {
+            if (testParameters.authorizationAction != null) {
+                if (testParameters.authorizationAction?.requiresBrowser == true) {
+                    // If a specific browser is requested we will use it, otherwise, we will
+                    // select the first browser found
+                    val selectedBrowser = getBrowser(BrowserUI.convert(testParameters.useBrowser))
+
+                    awaitBrowserAndDismissFirstRun(selectedBrowser)
+
+                    blockUntilAuthorizationPageLoaded(isSetup = testParameters.isSetupMode)
+                }
+
+                if (authorizeAction != null) {
+                    if (authorizeAction.exists()) {
+                        authorizeAction.click()
+                    } else if (!authorizeAction.exists()) {
+                        // Buttons aren't showing the same way each time in the web page.
+                        object : UiAutomatorText(
+                            label = requireNotNull(testParameters.authorizationAction)
+                                .text(testParameters.isSetupMode),
+                            className = "android.widget.TextView",
+                            device = device
+                        ) {
+                            override fun click() {
+                                if (testParameters.paymentMethodCode == "wechat_pay") {
+                                    wait(5000)
+                                }
+                                super.click()
+                            }
+                        }.click()
+                        Log.e("Stripe", "Fail authorization was a text view not a button this time")
+                    }
+                }
+
+                when (val authAction = testParameters.authorizationAction) {
+                    is AuthorizeAction.DisplayQrCode -> {
+                        if (!testParameters.isSetupMode) {
+                            closeButton.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                            onView(withText("CLOSE")).perform(click())
+                        }
+                    }
+
+                    is AuthorizeAction.Authorize3ds2 -> {
+                        closeButton.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+
+                        val completeButton = UiAutomatorText("COMPLETE", device = device)
+
+                        completeButton.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        completeButton.click()
+                    }
+
+                    is AuthorizeAction.Test3DS2.HSBCHTML -> {
+                        val otpButton = UiAutomatorText("OTP", labelMatchesExactly = true, device = device)
+
+                        otpButton.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        otpButton.click()
+
+                        val submitButton = UiAutomatorText("Submit", labelMatchesExactly = true, device = device)
+                        submitButton.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        submitButton.click()
+
+                        val enterOTPField = UiAutomatorText("", labelMatchesExactly = true, device = device)
+                        enterOTPField.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        enterOTPField.click()
+                        enterOTPField.setText("555555")
+
+                        val otpSubmit = UiAutomatorText("Submit", labelMatchesExactly = true, device = device)
+                        otpSubmit.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        otpSubmit.click()
+                    }
+
+                    is AuthorizeAction.Test3DS2.SingleSelect -> {
+                        val completeAuthentication =
+                            UiAutomatorText("Complete Authentication", labelMatchesExactly = true, device = device)
+                        completeAuthentication.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        completeAuthentication.click()
+
+                        val submitButton = UiAutomatorText("Submit", labelMatchesExactly = true, device = device)
+                        submitButton.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        submitButton.click()
+                    }
+
+                    is AuthorizeAction.Test3DS2.MultiSelect -> {
+                        UiSelector().textContains("Complete Authentication")
+                        val completeAuthentication =
+                            UiAutomatorText("Complete Authentication", labelMatchesExactly = true, device = device)
+                        completeAuthentication.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        device.findObject(UiSelector().textContains("Complete Authentication").index(0)).click()
+                        device.findObject(UiSelector().textContains("Complete Authentication").index(1)).click()
+                        device.findObject(UiSelector().textContains("Complete Authentication").index(2)).click()
+
+                        val submitButton = UiAutomatorText("Submit", labelMatchesExactly = true, device = device)
+                        submitButton.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        submitButton.click()
+                    }
+
+                    is AuthorizeAction.Test3DS2.OOB -> {
+                        val completeAuthentication =
+                            UiAutomatorText("Complete Authentication", labelMatchesExactly = true, device = device)
+                        completeAuthentication.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        completeAuthentication.click()
+                    }
+
+                    is AuthorizeAction.Test3DS2.OTP -> {
+                        val explanationText =
+                            UiAutomatorText("For this test", labelMatchesExactly = true, device = device)
+                        explanationText.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+
+                        val enterOTPField = UiAutomatorText(
+                            "Enter your code below:",
+                            labelMatchesExactly = true,
+                            className = "android.widget.EditText",
+                            device = device
+                        )
+                        enterOTPField.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        enterOTPField.click()
+                        enterOTPField.setText("424242")
+
+                        val submitButton = UiAutomatorText("Submit", labelMatchesExactly = true, device = device)
+                        submitButton.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        submitButton.click()
+                    }
+
+                    is AuthorizeAction.AuthorizePayment -> {}
+                    is AuthorizeAction.PollingSucceedsAfterDelay -> {
+                        waitForPollingToFinish()
+                    }
+
+                    is AuthorizeAction.Cancel -> {
+                        buyButton.apply {
+                            waitProcessingComplete()
+                            isEnabled()
+                            isDisplayed()
+                        }
+                    }
+
+                    is AuthorizeAction.Fail -> {
+                        buyButton.apply {
+                            waitProcessingComplete()
+                            isEnabled()
+                            isDisplayed()
+                        }
+
+                        // The text comes after the buy button animation is complete
+                        composeTestRule.waitUntil(timeoutMillis = DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+                            runCatching {
+                                composeTestRule
+                                    .onNodeWithText(authAction.expectedError)
+                                    .assertIsDisplayed()
+                            }.isSuccess
+                        }
+                    }
+                    is AuthorizeAction.Bacs.Confirm -> {}
+                    is AuthorizeAction.Bacs.ModifyDetails -> {
+                        buyButton.apply {
+                            scrollTo()
+                            waitProcessingComplete()
+                            isEnabled()
+                            isDisplayed()
+                        }
+                    }
+                    is AuthorizeAction.ShowQrCodeThenPoll -> {
+                        val simulateScanText = UiAutomatorText(
+                            "Simulate scan",
+                            labelMatchesExactly = true,
+                            device = device
+                        )
+                        simulateScanText.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        simulateScanText.click()
+
+                        val authorizeTestPaymentText = UiAutomatorText(
+                            "AUTHORIZE TEST PAYMENT",
+                            labelMatchesExactly = true,
+                            device = device
+                        )
+                        authorizeTestPaymentText.wait(DEFAULT_UI_TIMEOUT.inWholeMilliseconds)
+                        authorizeTestPaymentText.click()
+
+                        waitForPollingToFinish()
+                    }
+                    null -> {}
+                }
+            } else {
+                // Make sure there is no prompt and no browser window open
+                assertThat(selectBrowserPrompt.exists()).isFalse()
+                BrowserUI.values().forEach {
+                    assertThat(Selectors.browserWindow(device, it)?.exists() == true).isFalse()
+                }
+            }
+        }
+
+        finishAfterAuthorization()
+    }
+
+    private fun finishAfterAuthorization() {
+        val authAction = testParameters.authorizationAction
+        val isDone = authAction == null || authAction.isConsideredDone
+
+        if (isDone) {
+            playgroundState?.integrationType?.let { integrationType ->
+                if (integrationType.isPaymentFlow()) {
+                    if (integrationType == PlaygroundConfigurationData.IntegrationType.Embedded) {
+                        waitUntilPrimaryButtonIsCompleted()
+                    }
+
+                    waitForPlaygroundActivity()
+
+                    if (integrationType == PlaygroundConfigurationData.IntegrationType.FlowController) {
+                        waitUntilCheckoutButtonIsGone()
+                    }
+
+                    resultCountDownLatch?.let {
+                        assertThat(it.await(5, TimeUnit.SECONDS)).isTrue()
+                    }
+                    assertThat(resultValue).isEqualTo(SUCCESS_RESULT)
+                } else if (integrationType.isCustomerFlow()) {
+                    waitForCustomerSheetConfirmButton()
+                }
+            }
+        }
+    }
+
+    private fun doInstantDebitsFlow(authAction: AuthorizeAction?) {
+        if (authAction == AuthorizeAction.Cancel) {
+            cancelInstantDebitsFlowOnLaunch()
+        } else {
+            executeEntireInstantDebitsFlow()
+        }
+    }
+
+    private fun cancelInstantDebitsFlowOnLaunch() {
+        awaitActivityClass(FINANCIAL_CONNECTIONS_ACTIVITY)
+
+        Espresso.onIdle()
+        composeTestRule.waitForIdle()
+
+        Espresso.pressBack()
+    }
+
+    private fun executeUsBankAccountLiteFlow() {
+        awaitActivityClass(FINANCIAL_CONNECTIONS_LITE_ACTIVITY)
+
+        val firstPane = onWebView().withElementByAnyTestId(
+            testIds = FINANCIAL_CONNECTIONS_LITE_INITIAL_PANE_TEST_IDS,
+            timeout = WEBVIEW_ELEMENT_TIMEOUT,
+        )
+        firstPane.interaction.perform(webClick())
+
+        onWebView()
+            .withElementByTestId(
+                testId = FINANCIAL_CONNECTIONS_LITE_INITIAL_PANE_TEST_IDS.first { it != firstPane.testId },
+                timeout = WEBVIEW_ELEMENT_TIMEOUT,
+            )
+            .perform(webClick())
+
+        onWebView()
+            .withElementByTestId(
+                testId = "select-button",
+                timeout = WEBVIEW_ELEMENT_TIMEOUT,
+            )
+            .perform(webClick())
+
+        onWebView()
+            .withElementByTestId(
+                testId = "link-not-now-button",
+                timeout = WEBVIEW_ELEMENT_TIMEOUT,
+            )
+            .perform(webClick())
+
+        onWebView()
+            .withElementByTestId(
+                testId = "done-button",
+                timeout = WEBVIEW_ELEMENT_TIMEOUT,
+            )
+            .perform(webClick())
+    }
+
+    private fun executeUsBankAccountFlow() {
+        awaitActivityClass(FINANCIAL_CONNECTIONS_ACTIVITY)
+
+        composeTestRule.waitUntil(
+            conditionDescription = "Financial Connections consent screen to appear",
+            timeoutMillis = FINANCIAL_CONNECTIONS_UI_TIMEOUT.inWholeMilliseconds,
+        ) {
+            composeTestRule
+                .onAllNodesWithTag("consent_cta")
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .size == 1
+        }
+
+        clickButtonWithTag("consent_cta")
+        waitUntilTag("loaded_picker_title")
+        scrollToAndClick("Test (Non-OAuth)")
+
+        // Verifies the bank in a browser, during which the Compose hierarchy can detach. This wait
+        // yields through the Compose rule so the asynchronous browser launch can progress.
+        selectors.awaitBrowserAndDismissFirstRun(
+            getBrowser(BrowserUI.convert(testParameters.useBrowser))
+        )
+        clickButtonWithTag("connect_account_button", composeCanDetach = true)
+
+        clickButtonWithTag("skip_cta")
+        clickButtonWithTag("done_button")
+    }
+
+    private fun executeEntireInstantDebitsFlow() {
+        awaitActivityClass(FINANCIAL_CONNECTIONS_ACTIVITY)
+
+        composeTestRule.waitUntil(
+            conditionDescription = "Financial Connections consent screen to appear",
+            timeoutMillis = FINANCIAL_CONNECTIONS_UI_TIMEOUT.inWholeMilliseconds,
+        ) {
+            composeTestRule
+                .onAllNodesWithTag("consent_cta")
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isNotEmpty()
+        }
+
+        clickButtonWithTag("consent_cta")
+        clickButtonWithTag("existing_email-button")
+        clickButtonWithTag("test_mode_fill_button")
+
+        waitUntilTag("loaded_picker_title")
+        scrollToAndClick("Success")
+
+        clickButtonWithTag("link_account_picker_cta")
+        return clickButtonWithTag("done_button")
+    }
+
+    private fun doUSBankAccountAuthorization(authAction: AuthorizeAction?) {
+        if (authAction == AuthorizeAction.Cancel) {
+            cancelAchFlowOnLaunch()
+        } else {
+            executeUsBankAccountFlow()
+        }
+    }
+
+    private fun doUSBankAccountLiteAuthorization(authAction: AuthorizeAction?) {
+        if (authAction == AuthorizeAction.Cancel) {
+            cancelAchLiteFlowOnLaunch()
+        } else {
+            executeUsBankAccountLiteFlow()
+        }
+    }
+
+    private fun cancelAchLiteFlowOnLaunch() {
+        awaitActivityClass(FINANCIAL_CONNECTIONS_LITE_ACTIVITY)
+
+        onWebView().withElementByAnyTestId(
+            testIds = FINANCIAL_CONNECTIONS_LITE_INITIAL_PANE_TEST_IDS,
+            timeout = WEBVIEW_ELEMENT_TIMEOUT,
+        )
+
+        if (testParameters.authorizationAction == AuthorizeAction.Cancel) {
+            selectors.authorizeAction?.click()
+        }
+
+        onView(withText("YES, EXIT"))
+            .inRoot(isDialog())
+            .perform(click())
+    }
+
+    private fun cancelAchFlowOnLaunch() {
+        awaitActivityClass(FINANCIAL_CONNECTIONS_ACTIVITY)
+
+        composeTestRule.waitUntil(timeoutMillis = DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule
+                .onAllNodesWithText("Agree and continue")
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .size == 1
+        }
+
+        if (testParameters.authorizationAction == AuthorizeAction.Cancel) {
+            selectors.authorizeAction?.click()
+        }
+    }
+
+    private fun waitUntilTag(tag: String) {
+        composeTestRule.waitUntil(
+            conditionDescription = "node with test tag '$tag' to appear",
+            timeoutMillis = FINANCIAL_CONNECTIONS_UI_TIMEOUT.inWholeMilliseconds,
+        ) {
+            composeTestRule
+                .onAllNodesWithTag(tag)
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isNotEmpty()
+        }
+    }
+
+    private fun scrollToAndClick(text: String) {
+        composeTestRule.onNode(hasScrollToNodeAction())
+            .performScrollToNode(hasText(text))
+        composeTestRule.onNodeWithText(text)
+            .performClick()
+    }
+
+    private fun clickButtonWithTag(tag: String, composeCanDetach: Boolean = false) {
+        val matcher = hasTestTag(tag).and(isEnabled()).and(hasClickAction())
+        composeTestRule.waitUntil(
+            conditionDescription = "enabled button with test tag '$tag' to appear",
+            timeoutMillis = FINANCIAL_CONNECTIONS_UI_TIMEOUT.inWholeMilliseconds,
+        ) {
+            composeTestRule
+                .onAllNodes(matcher)
+                .fetchSemanticsNodes(atLeastOneRootRequired = !composeCanDetach)
+                .isNotEmpty()
+        }
+
+        composeTestRule.onNode(matcher).performClick()
+    }
+
+    internal fun setup(testParameters: TestParameters) {
+        if (Build.VERSION.SDK_INT <= 28) {
+            val unsupportedAuthorizeActions = setOf(AuthorizeAction.Authorize3ds2, AuthorizeAction.DisplayQrCode)
+            assumeFalse(unsupportedAuthorizeActions.contains(testParameters.authorizationAction))
+        }
+
+        this.testParameters = testParameters
+        this.selectors = Selectors(device, composeTestRule, testParameters)
+
+        val launchPlayground = CountDownLatch(1)
+
+        val intent = PaymentSheetPlaygroundActivity.createTestIntent(
+            settingsJson = testParameters.playgroundSettingsSnapshot.asJsonString()
+        )
+
+        val scenario = ActivityScenario.launch<PaymentSheetPlaygroundActivity>(intent)
+        scenario.onActivity { activity ->
+            if (testParameters.resetCustomer) {
+                PaymentSheet.resetCustomer(activity.applicationContext)
+            }
+
+            monitorCurrentActivity(activity.application)
+
+            IdlingPolicies.setIdlingResourceTimeout(45, TimeUnit.SECONDS)
+            IdlingPolicies.setMasterPolicyTimeout(45, TimeUnit.SECONDS)
+
+            // Observe the result of the PaymentSheet completion
+            activity.lifecycleScope.launch {
+                activity.viewModel.status.collect {
+                    resultValue = it?.message
+                    if (it?.message != null) {
+                        resultCountDownLatch?.countDown()
+                    }
+                }
+            }
+
+            activity.lifecycleScope.launch {
+                activity.viewModel.state.collect { playgroundState ->
+                    this@PlaygroundTestDriver.playgroundState = playgroundState
+                }
+            }
+
+            launchPlayground.countDown()
+        }
+
+        launchPlayground.await(5, TimeUnit.SECONDS)
+    }
+
+    internal fun teardown() {
+        application?.unregisterActivityLifecycleCallbacks(activityLifecycleCallbacks)
+        playgroundState = null
+        currentActivity = null
+        resultValue = null
+        resultCountDownLatch = null
+    }
+
+    private fun isSelectPaymentMethodScreen(): Boolean {
+        return runCatching {
+            composeTestRule.onNodeWithText("Select your payment method").assertIsDisplayed()
+        }.isSuccess
+    }
+
+    private fun addPaymentMethodNode(): SemanticsNodeInteraction {
+        waitForAddPaymentMethodNode()
+        return composeTestRule.onNodeWithTag(ADD_PAYMENT_METHOD_NODE_TAG)
+    }
+
+    private fun waitForAddPaymentMethodNode() {
+        composeTestRule.waitUntil(DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule
+                .onAllNodesWithTag(ADD_PAYMENT_METHOD_NODE_TAG)
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isNotEmpty()
+        }
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    private fun waitForCustomerSheetSaveButton() {
+        composeTestRule.waitUntilAtLeastOneExists(
+            hasTestTag(CUSTOMER_SHEET_SAVE_BUTTON_TEST_TAG),
+            DEFAULT_UI_TIMEOUT.inWholeMilliseconds
+        )
+    }
+
+    private fun waitForCustomerSheetConfirmButton() {
+        composeTestRule.waitUntil(DEFAULT_UI_TIMEOUT.inWholeMilliseconds) {
+            composeTestRule
+                .onAllNodesWithTag(CUSTOMER_SHEET_CONFIRM_BUTTON_TEST_TAG)
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
+                .isNotEmpty()
+        }
+    }
+
+    private companion object {
+        // Generous upper bound on activity transitions (activity resume is fast; this only bounds the
+        // failure path). Kept well under the 90s per-test Timeout so a hang surfaces a clear message.
+        val ACTIVITY_TRANSITION_TIMEOUT: Duration = 45.seconds
+        val CHECKOUT_PREPARATION_TIMEOUT: Duration = 45.seconds
+        val FINANCIAL_CONNECTIONS_COMPLETION_TIMEOUT: Duration = 60.seconds
+        val FINANCIAL_CONNECTIONS_UI_TIMEOUT: Duration = 45.seconds
+        val FINANCIAL_CONNECTIONS_LITE_INITIAL_PANE_TEST_IDS = listOf(
+            "institution-default",
+            "agree-button",
+        )
+        const val ACTIVITY_POLL_INTERVAL_MS = 250L
+
+        const val ADD_PAYMENT_METHOD_NODE_TAG = "${SAVED_PAYMENT_METHOD_CARD_TEST_TAG}_+ Add"
+        const val FINANCIAL_CONNECTIONS_ACTIVITY =
+            "com.stripe.android.financialconnections.FinancialConnectionsSheetActivity"
+        const val FINANCIAL_CONNECTIONS_LITE_ACTIVITY =
+            "com.stripe.android.financialconnections.lite.FinancialConnectionsSheetLiteActivity"
+    }
+}
+
+private fun TestParameters.countDownLatch(): CountDownLatch? {
+    return if (authorizationAction?.isConsideredDone == true) {
+        CountDownLatch(1)
+    } else {
+        null
+    }
+}

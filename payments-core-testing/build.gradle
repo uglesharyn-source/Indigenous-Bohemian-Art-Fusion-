@@ -1,0 +1,33 @@
+apply from: configs.androidLibrary
+apply plugin: 'org.jetbrains.kotlin.plugin.parcelize'
+
+android {
+    buildFeatures {
+        buildConfig true
+    }
+    defaultConfig {
+        buildConfigField "boolean", "IS_RUNNING_IN_CI", "$gradle.ext.isCi"
+    }
+}
+
+dependencies {
+    implementation project(":payments-core")
+
+    implementation libs.androidx.activity
+    implementation libs.androidx.viewModel
+    implementation libs.kotlin.coroutines
+    implementation libs.kotlin.coroutinesAndroid
+    implementation testLibs.junit
+    implementation testLibs.androidx.core
+    implementation testLibs.kotlin.coroutines
+    implementation testLibs.mockito.kotlin
+    implementation testLibs.turbine
+    implementation testLibs.leakCanaryInstrumentation
+
+    androidTestImplementation project(':stripe-ui-core') // Resources defined here, but used in payments-core.
+
+    testImplementation testLibs.json
+    testImplementation testLibs.junit
+    testImplementation testLibs.robolectric
+    testImplementation testLibs.truth
+}

@@ -1,0 +1,437 @@
+package com.stripe.android.identity.ui
+
+import androidx.annotation.StringRes
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.MaterialTheme
+import androidx.compose.material.Tab
+import androidx.compose.material.TabRow
+import androidx.compose.material.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.dimensionResource
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.navigation.NavController
+import com.stripe.android.camera.scanui.CameraView
+import com.stripe.android.identity.R
+import com.stripe.android.identity.analytics.IdentityAnalyticsRequestFactory.CameraSource
+import com.stripe.android.identity.analytics.IdentityAnalyticsRequestFactory.Companion.SCREEN_NAME_LIVE_CAPTURE
+import com.stripe.android.identity.camera.DocumentScanCameraManager
+import com.stripe.android.identity.camera.IdentityCameraManager
+import com.stripe.android.identity.networking.models.DocumentUploadParam
+import com.stripe.android.identity.states.IdentityScanState
+import com.stripe.android.identity.states.IdentityScanState.Companion.isFront
+import com.stripe.android.identity.viewmodel.DocumentScanViewModel
+import com.stripe.android.identity.viewmodel.IdentityScanViewModel
+import com.stripe.android.identity.viewmodel.IdentityViewModel
+import com.stripe.android.uicore.utils.collectAsState
+import kotlinx.coroutines.launch
+
+internal const val CONTINUE_BUTTON_TAG = "Continue"
+internal const val SCAN_TITLE_TAG = "Title"
+internal const val SCAN_MESSAGE_TAG = "Message"
+internal const val CHECK_MARK_TAG = "CheckMark"
+internal const val CAPTURE_MODE_CONTROL_TAG = "CaptureModeControl"
+internal const val LIVE_CAPTURE_MODE_TAG = "LiveCaptureMode"
+internal const val MANUAL_CAPTURE_MODE_TAG = "ManualCaptureMode"
+internal const val VIEW_FINDER_ASPECT_RATIO = 1f
+
+private enum class CaptureMode {
+    LIVE,
+    MANUAL
+}
+
+@Composable
+internal fun DocumentScanScreen(
+    navController: NavController,
+    identityViewModel: IdentityViewModel,
+    documentScanViewModel: DocumentScanViewModel,
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val cameraManager = remember {
+        DocumentScanCameraManager(
+            context = context
+        ) { cause ->
+            identityViewModel.identityAnalyticsRequestFactory.cameraError(
+                scanType = documentScanViewModel.targetScanTypeFlow.value
+                    ?: IdentityScanState.ScanType.DOC_FRONT,
+                throwable = IllegalStateException(cause),
+                screenName = SCREEN_NAME_LIVE_CAPTURE,
+                cameraSource = CameraSource.CAMERA_SESSION
+            )
+        }
+    }
+
+    CheckVerificationPageModelFilesAndCompose(
+        identityViewModel = identityViewModel,
+        navController = navController
+    ) { pageAndModelFiles ->
+        var captureMode by rememberSaveable {
+            mutableStateOf(CaptureMode.LIVE)
+        }
+
+        val targetScanType by documentScanViewModel.targetScanTypeFlow.collectAsState()
+        val documentScannerState by documentScanViewModel.scannerState.collectAsState()
+        val feedback by documentScanViewModel.scanFeedback.collectAsState()
+        val latestManualCaptureFrame by documentScanViewModel.latestManualCaptureFrame.collectAsState()
+
+        fun startDocumentCapture(scanType: IdentityScanState.ScanType) {
+            identityViewModel.updateNewScanType(scanType)
+            if (captureMode == CaptureMode.MANUAL) {
+                documentScanViewModel.startManualCapture(
+                    scanType = scanType,
+                    lifecycleOwner = lifecycleOwner
+                )
+            } else {
+                documentScanViewModel.fpsTracker.start()
+                documentScanViewModel.startScan(
+                    scanType = scanType,
+                    lifecycleOwner = lifecycleOwner
+                )
+            }
+        }
+
+        ScreenTransitionLaunchedEffect(
+            identityViewModel = identityViewModel,
+            screenName = SCREEN_NAME_LIVE_CAPTURE
+        )
+
+        LaunchedEffect(Unit) {
+            documentScanViewModel.initializeScanFlowAndUpdateState(pageAndModelFiles, cameraManager)
+        }
+
+        LiveCaptureLaunchedEffect(
+            scannerState = documentScannerState,
+            identityScanViewModel = documentScanViewModel,
+            identityViewModel = identityViewModel,
+            lifecycleOwner = lifecycleOwner,
+            verificationPage = pageAndModelFiles.page,
+            navController = navController,
+            cameraManager = cameraManager
+        )
+
+        when (documentScannerState) {
+            IdentityScanViewModel.State.Initializing -> {
+                LoadingScreen()
+            }
+            else -> {
+                DocumentCaptureScreen(
+                    documentScannerState = documentScannerState,
+                    feedback = feedback,
+                    targetScanType = targetScanType,
+                    captureMode = captureMode,
+                    hasManualCaptureFrame = latestManualCaptureFrame != null,
+                    identityScanViewModel = documentScanViewModel,
+                    identityViewModel = identityViewModel,
+                    lifecycleOwner = lifecycleOwner,
+                    cameraManager = cameraManager,
+                    documentScanViewModel = documentScanViewModel,
+                    onCaptureModeChanged = { newMode ->
+                        if (captureMode == newMode) {
+                            return@DocumentCaptureScreen
+                        }
+                        documentScanViewModel.stopScan(lifecycleOwner)
+                        captureMode = newMode
+                    },
+                    onTakePhotoClick = onTakePhotoClick@{
+                        val scanType = requireNotNull(targetScanType) {
+                            "targetScanType is still null"
+                        }
+                        val capturedFrame = documentScanViewModel.captureManualResult(
+                            lifecycleOwner = lifecycleOwner
+                        ) ?: return@onTakePhotoClick
+                        cameraManager.getCameraLensModel()?.let(identityViewModel::setCameraLensModel)
+                        cameraManager.getExposureIso()?.let(identityViewModel::setCameraExposureIso)
+                        cameraManager.getFocalLength()?.let(identityViewModel::setCameraFocalLength)
+                        cameraManager.getExposureDuration()?.let(identityViewModel::setCameraExposureDuration)
+                        cameraManager.isVirtualCamera()?.let(identityViewModel::setIsVirtualCamera)
+                        identityViewModel.uploadManualResult(
+                            bitmap = capturedFrame.image,
+                            isFront = scanType.isFront(),
+                            docCapturePage = pageAndModelFiles.page.documentCapture,
+                            uploadMethod = DocumentUploadParam.UploadMethod.MANUALCAPTURE,
+                            scanType = scanType
+                        )
+                    }
+                ) {
+                    coroutineScope.launch {
+                        identityViewModel.collectDataForDocumentScanScreen(
+                            navController = navController,
+                            isFront = requireNotNull(targetScanType) {
+                                "targetScanType is still null"
+                            }.isFront()
+                        ) {
+                            startDocumentCapture(IdentityScanState.ScanType.DOC_BACK)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Suppress("LongMethod", "CyclomaticComplexMethod")
+@Composable
+private fun DocumentCaptureScreen(
+    documentScannerState: IdentityScanViewModel.State,
+    @StringRes feedback: Int?,
+    targetScanType: IdentityScanState.ScanType?,
+    captureMode: CaptureMode,
+    hasManualCaptureFrame: Boolean,
+    identityScanViewModel: IdentityScanViewModel,
+    identityViewModel: IdentityViewModel,
+    lifecycleOwner: LifecycleOwner,
+    cameraManager: IdentityCameraManager,
+    documentScanViewModel: DocumentScanViewModel,
+    onCaptureModeChanged: (CaptureMode) -> Unit,
+    onTakePhotoClick: () -> Unit,
+    onContinueClick: () -> Unit
+) {
+    val collectedData by identityViewModel.collectedData.collectAsState()
+    val isManualCaptureMode = captureMode == CaptureMode.MANUAL
+
+    LaunchedEffect(captureMode) {
+        val scanType = if (collectedData.idDocumentFront != null) {
+            IdentityScanState.ScanType.DOC_BACK
+        } else {
+            IdentityScanState.ScanType.DOC_FRONT
+        }
+        identityViewModel.updateNewScanType(scanType)
+        if (isManualCaptureMode) {
+            identityScanViewModel.startManualCapture(
+                scanType = scanType,
+                lifecycleOwner = lifecycleOwner
+            )
+        } else {
+            identityScanViewModel.fpsTracker.start()
+            identityScanViewModel.startScan(
+                scanType = scanType,
+                lifecycleOwner = lifecycleOwner
+            )
+        }
+    }
+
+    val title = stringResource(id = documentScanViewModel.getDocumentPositionStringRes(targetScanType))
+    val feedbackText = stringResource(
+        id = if (documentScannerState is IdentityScanViewModel.State.ManualCaptured) {
+            R.string.stripe_image_taken
+        } else {
+            requireNotNull(feedback) {
+                "Document scan feedback should never be null"
+            }
+        }
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(
+                vertical = dimensionResource(id = R.dimen.stripe_page_vertical_margin),
+                horizontal = dimensionResource(id = R.dimen.stripe_page_horizontal_margin)
+            )
+    ) {
+        var loadingButtonState by remember(
+            documentScannerState,
+            isManualCaptureMode,
+            hasManualCaptureFrame
+        ) {
+            mutableStateOf(
+                when {
+                    documentScannerState is IdentityScanViewModel.State.Scanned ||
+                        documentScannerState is IdentityScanViewModel.State.ManualCaptured -> {
+                        LoadingButtonState.Idle
+                    }
+                    isManualCaptureMode && hasManualCaptureFrame -> {
+                        LoadingButtonState.Idle
+                    }
+                    else -> {
+                        LoadingButtonState.Disabled
+                    }
+                }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+        ) {
+            CaptureModeControl(
+                captureMode = captureMode,
+                enabled = documentScannerState !is IdentityScanViewModel.State.Scanned &&
+                    documentScannerState !is IdentityScanViewModel.State.ManualCaptured,
+                onCaptureModeChanged = onCaptureModeChanged
+            )
+            Text(
+                text = title,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics {
+                        testTag = SCAN_TITLE_TAG
+                    },
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = feedbackText,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 100.dp)
+                    .padding(
+                        top = dimensionResource(id = R.dimen.stripe_item_vertical_margin),
+                        bottom = 48.dp
+                    )
+                    .semantics {
+                        testTag = SCAN_MESSAGE_TAG
+                    }
+            )
+
+            CameraViewFinder(
+                shouldShowFinished =
+                documentScannerState is IdentityScanViewModel.State.Scanned ||
+                    documentScannerState is IdentityScanViewModel.State.ManualCaptured,
+                cameraManager = cameraManager
+            )
+        }
+        LoadingButton(
+            modifier = Modifier.testTag(CONTINUE_BUTTON_TAG),
+            text = if (
+                isManualCaptureMode &&
+                documentScannerState is IdentityScanViewModel.State.Scanning
+            ) {
+                stringResource(id = R.string.stripe_take_photo).uppercase()
+            } else {
+                stringResource(id = R.string.stripe_kontinue).uppercase()
+            },
+            state = loadingButtonState
+        ) {
+            loadingButtonState = LoadingButtonState.Loading
+            if (
+                isManualCaptureMode &&
+                documentScannerState is IdentityScanViewModel.State.Scanning
+            ) {
+                onTakePhotoClick()
+            } else {
+                onContinueClick()
+            }
+        }
+    }
+}
+
+@Composable
+private fun CaptureModeControl(
+    captureMode: CaptureMode,
+    enabled: Boolean,
+    onCaptureModeChanged: (CaptureMode) -> Unit
+) {
+    TabRow(
+        selectedTabIndex = if (captureMode == CaptureMode.LIVE) 0 else 1,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = dimensionResource(id = R.dimen.stripe_item_vertical_margin))
+            .testTag(CAPTURE_MODE_CONTROL_TAG)
+    ) {
+        Tab(
+            selected = captureMode == CaptureMode.LIVE,
+            onClick = { onCaptureModeChanged(CaptureMode.LIVE) },
+            enabled = enabled,
+            modifier = Modifier.testTag(LIVE_CAPTURE_MODE_TAG),
+            text = {
+                Text(text = stringResource(id = R.string.stripe_live))
+            }
+        )
+        Tab(
+            selected = captureMode == CaptureMode.MANUAL,
+            onClick = { onCaptureModeChanged(CaptureMode.MANUAL) },
+            enabled = enabled,
+            modifier = Modifier.testTag(MANUAL_CAPTURE_MODE_TAG),
+            text = {
+                Text(text = stringResource(id = R.string.stripe_manual))
+            }
+        )
+    }
+}
+
+@Composable
+private fun CameraViewFinder(
+    shouldShowFinished: Boolean,
+    cameraManager: IdentityCameraManager
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(VIEW_FINDER_ASPECT_RATIO)
+            .padding(
+                horizontal = 2.dp
+            )
+            .clip(RoundedCornerShape(dimensionResource(id = R.dimen.stripe_view_finder_corner_radius)))
+    ) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = {
+                CameraView(
+                    it,
+                    CameraView.ViewFinderType.ID,
+                    R.drawable.stripe_viewfinder_border_initial
+                )
+            },
+            update = {
+                cameraManager.onCameraViewUpdate(it)
+            }
+        )
+        if (shouldShowFinished) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        colorResource(id = R.color.stripe_check_mark_background)
+                    )
+                    .testTag(CHECK_MARK_TAG)
+            ) {
+                Image(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(60.dp),
+                    painter = painterResource(id = R.drawable.stripe_check_mark),
+                    contentDescription = stringResource(id = R.string.stripe_check_mark),
+                    colorFilter = ColorFilter.tint(MaterialTheme.colors.primary),
+                )
+            }
+        }
+    }
+}
+
+private const val FEED_BACK_REFRESH_LIMIT = 300L

@@ -1,0 +1,61 @@
+package com.stripe.android.paymentsheet.repositories
+
+import com.stripe.android.checkouttesting.DEFAULT_CHECKOUT_SESSION_ID
+import com.stripe.android.model.ElementsSession
+import com.stripe.android.model.PaymentIntent
+import com.stripe.android.model.SetupIntent
+
+internal object CheckoutSessionResponseFactory {
+
+    fun create(
+        id: String = DEFAULT_CHECKOUT_SESSION_ID,
+        amount: Long = 1000L,
+        currency: String = "usd",
+        mode: CheckoutSessionResponse.Mode = CheckoutSessionResponse.Mode.PAYMENT,
+        status: CheckoutSessionResponse.Status = CheckoutSessionResponse.Status.OPEN,
+        liveMode: Boolean = false,
+        taxStatus: CheckoutSessionResponse.TaxStatus = CheckoutSessionResponse.TaxStatus.READY,
+        customerEmail: String? = null,
+        elementsSession: ElementsSession? = null,
+        paymentIntent: PaymentIntent? = null,
+        setupIntent: SetupIntent? = null,
+        customer: CheckoutSessionResponse.Customer? = null,
+        savedPaymentMethodsOfferSave: CheckoutSessionResponse.SavedPaymentMethodsOfferSave? = null,
+        totalSummary: CheckoutSessionResponse.TotalSummaryResponse? = null,
+        lineItems: List<CheckoutSessionResponse.LineItem> = emptyList(),
+        shippingOptions: List<CheckoutSessionResponse.ShippingRate> = emptyList(),
+        adaptivePricingInfo: CheckoutSessionResponse.AdaptivePricingInfo? = null,
+        automaticTaxEnabled: Boolean = false,
+        taxAddressSource: CheckoutSessionResponse.TaxAddressSource? = null,
+        allowedShippingCountries: List<String>? = null,
+        requiresBillingAddress: Boolean = false,
+        merchantCountry: String? = "US",
+        businessName: String? = "Example, Inc.",
+    ): CheckoutSessionResponse {
+        return CheckoutSessionResponse(
+            id = id,
+            amount = amount,
+            currency = currency,
+            mode = mode,
+            status = status,
+            liveMode = liveMode,
+            taxStatus = taxStatus,
+            customerEmail = customerEmail,
+            elementsSession = elementsSession,
+            paymentIntent = paymentIntent,
+            setupIntent = setupIntent,
+            customer = customer,
+            savedPaymentMethodsOfferSave = savedPaymentMethodsOfferSave,
+            totalSummary = totalSummary,
+            lineItems = lineItems,
+            shippingOptions = shippingOptions,
+            adaptivePricingInfo = adaptivePricingInfo,
+            automaticTaxEnabled = automaticTaxEnabled,
+            taxAddressSource = taxAddressSource,
+            allowedShippingCountries = allowedShippingCountries,
+            requiresBillingAddress = requiresBillingAddress,
+            merchantCountry = merchantCountry,
+            businessName = businessName,
+        )
+    }
+}

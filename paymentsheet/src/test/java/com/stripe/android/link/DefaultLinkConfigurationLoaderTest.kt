@@ -1,0 +1,176 @@
+package com.stripe.android.link
+
+import androidx.lifecycle.SavedStateHandle
+import com.google.common.truth.Truth.assertThat
+import com.stripe.android.ApiKeyFixtures
+import com.stripe.android.link.exceptions.LinkUnavailableException
+import com.stripe.android.link.gate.FakeLinkGate
+import com.stripe.android.networking.RequestSurface
+import com.stripe.android.paymentsheet.PaymentSheet
+import com.stripe.android.paymentsheet.state.LinkState
+import com.stripe.android.paymentsheet.state.PaymentElementLoader
+import com.stripe.android.testing.FakeLogger
+import com.stripe.android.utils.FakePaymentElementLoader
+import kotlinx.coroutines.test.runTest
+import org.junit.Test
+import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
+
+internal class DefaultLinkConfigurationLoaderTest {
+    private val logger = FakeLogger()
+    private val linkGate = FakeLinkGate()
+    private val linkGateFactory = FakeLinkGate.Factory(linkGate)
+    private val configuration =
+        LinkController.Configuration(
+            merchantDisplayName = "Test Merchant",
+            publishableKey = ApiKeyFixtures.DEFAULT_PUBLISHABLE_KEY,
+        ).build()
+    private val linkConfiguration = TestFactory.LINK_CONFIGURATION
+
+    private val linkState = LinkState(
+        configuration = linkConfiguration,
+        loginState = LinkState.LoginState.LoggedIn,
+        signupMode = null,
+    )
+
+    private fun createLoader(
+        paymentElementLoader: PaymentElementLoader,
+        useNativeLink: Boolean? = null,
+        savedStateHandle: SavedStateHandle = SavedStateHandle(),
+    ): DefaultLinkConfigurationLoader {
+        useNativeLink?.let { linkGate.setUseNativeLink(it) }
+        return DefaultLinkConfigurationLoader(
+            logger = logger,
+            paymentElementLoader = paymentElementLoader,
+            linkGateFactory = linkGateFactory,
+            savedStateHandle = savedStateHandle,
+            requestSurface = RequestSurface.StandaloneLink,
+        )
+    }
+
+    @Test
+    fun `load() returns success when LinkConfiguration is available and useNativeLink is true`() = runTest {
+        val loader = createLoader(
+            paymentElementLoader = FakePaymentElementLoader(linkState = linkState),
+            useNativeLink = true
+        )
+
+        val result = loader.load(configuration)
+        assertThat(result.isSuccess).isTrue()
+        assertThat(result.getOrNull()?.linkConfiguration).isEqualTo(linkConfiguration)
+    }
+
+    @Test
+    fun `load() returns failure when linkState configuration is null`() = runTest {
+        val loader = createLoader(
+            paymentElementLoader = FakePaymentElementLoader(linkState = null)
+        )
+
+        val result = loader.load(configuration)
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(LinkUnavailableException::class.java)
+    }
+
+    @Test
+    fun `load() returns failure when useNativeLink is false`() = runTest {
+        val loader = createLoader(
+            paymentElementLoader = FakePaymentElementLoader(linkState = linkState),
+            useNativeLink = false
+        )
+
+        val result = loader.load(configuration)
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(LinkUnavailableException::class.java)
+    }
+
+    @Test
+    fun `load() returns failure when paymentElementLoader returns failure`() = runTest {
+        val loader = createLoader(
+            paymentElementLoader = FakePaymentElementLoader(shouldFail = true)
+        )
+
+        val result = loader.load(configuration)
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
+    }
+
+    @Test
+    fun `load() calls paymentElementLoader with expected configuration`() = runTest {
+        val paymentElementLoader = mock<PaymentElementLoader>()
+        val loader = createLoader(
+            paymentElementLoader = paymentElementLoader,
+            useNativeLink = true
+        )
+
+        val defaultBillingDetails =
+            PaymentSheet.BillingDetails(email = "foo@bar.com")
+        val billingDetailsCollectionConfiguration =
+            PaymentSheet.BillingDetailsCollectionConfiguration(
+                phone = PaymentSheet.BillingDetailsCollectionConfiguration.CollectionMode.Never,
+            )
+        val controllerConfig = LinkController.Configuration(
+            merchantDisplayName = TestFactory.MERCHANT_NAME,
+            publishableKey = ApiKeyFixtures.DEFAULT_PUBLISHABLE_KEY
+        )
+            .defaultBillingDetails(defaultBillingDetails)
+            .billingDetailsCollectionConfiguration(billingDetailsCollectionConfiguration)
+            .build()
+        loader.load(controllerConfig)
+
+        val configCaptor = argumentCaptor<PaymentElementLoader.Configuration>()
+        verify(paymentElementLoader).load(
+            initializationMode = any(),
+            integrationConfiguration = configCaptor.capture(),
+            metadata = any(),
+        )
+        val commonConfig = configCaptor.firstValue.commonConfiguration
+        assertThat(commonConfig.merchantDisplayName).isEqualTo(TestFactory.MERCHANT_NAME)
+        assertThat(commonConfig.defaultBillingDetails).isEqualTo(defaultBillingDetails)
+        assertThat(commonConfig.billingDetailsCollectionConfiguration).isEqualTo(billingDetailsCollectionConfiguration)
+    }
+
+    @Test
+    fun `load() sets isReloadingAfterProcessDeath true when configured key is present`() = runTest {
+        val paymentElementLoader = mock<PaymentElementLoader>()
+        val savedStateHandle = SavedStateHandle().apply {
+            set(LinkControllerInteractor.LINK_CONFIGURED_KEY, true)
+        }
+        val loader = createLoader(
+            paymentElementLoader = paymentElementLoader,
+            useNativeLink = true,
+            savedStateHandle = savedStateHandle,
+        )
+
+        loader.load(configuration)
+
+        val metadataCaptor = argumentCaptor<PaymentElementLoader.Metadata>()
+        verify(paymentElementLoader).load(
+            initializationMode = any(),
+            integrationConfiguration = any(),
+            metadata = metadataCaptor.capture(),
+        )
+        assertThat(metadataCaptor.firstValue.isReloadingAfterProcessDeath).isTrue()
+    }
+
+    @Test
+    fun `load() sets isReloadingAfterProcessDeath false when configured key is absent`() = runTest {
+        val paymentElementLoader = mock<PaymentElementLoader>()
+        val loader = createLoader(
+            paymentElementLoader = paymentElementLoader,
+            useNativeLink = true,
+            savedStateHandle = SavedStateHandle(),
+        )
+
+        loader.load(configuration)
+
+        val metadataCaptor = argumentCaptor<PaymentElementLoader.Metadata>()
+        verify(paymentElementLoader).load(
+            initializationMode = any(),
+            integrationConfiguration = any(),
+            metadata = metadataCaptor.capture(),
+        )
+        assertThat(metadataCaptor.firstValue.isReloadingAfterProcessDeath).isFalse()
+    }
+}

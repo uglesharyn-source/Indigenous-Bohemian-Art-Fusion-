@@ -1,0 +1,152 @@
+package com.stripe.android.paymentsheet.repositories
+
+import com.stripe.android.core.model.StripeModel
+import com.stripe.android.model.ElementsSession
+import com.stripe.android.model.PaymentIntent
+import com.stripe.android.model.PaymentMethod
+import com.stripe.android.model.SetupIntent
+import kotlinx.parcelize.Parcelize
+
+@Parcelize
+internal data class CheckoutSessionResponse(
+    val id: String,
+    val amount: Long,
+    val currency: String,
+    val mode: Mode,
+    val status: Status,
+    val liveMode: Boolean,
+    val taxStatus: TaxStatus,
+    val customerEmail: String?,
+    val elementsSession: ElementsSession?,
+    val paymentIntent: PaymentIntent?,
+    val setupIntent: SetupIntent?,
+    val customer: Customer?,
+    val savedPaymentMethodsOfferSave: SavedPaymentMethodsOfferSave?,
+    val totalSummary: TotalSummaryResponse?,
+    val lineItems: List<LineItem>,
+    val shippingOptions: List<ShippingRate>,
+    val adaptivePricingInfo: AdaptivePricingInfo?,
+    val automaticTaxEnabled: Boolean,
+    val taxAddressSource: TaxAddressSource?,
+    val allowedShippingCountries: List<String>?,
+    val requiresBillingAddress: Boolean,
+    val merchantCountry: String?,
+    val businessName: String?,
+) : StripeModel {
+
+    val collectsTaxFromBillingAddress: Boolean
+        get() = automaticTaxEnabled && taxAddressSource == TaxAddressSource.BILLING
+
+    enum class TaxAddressSource {
+        SHIPPING,
+        BILLING,
+    }
+
+    @Parcelize
+    data class SavedPaymentMethodsOfferSave(
+        val enabled: Boolean,
+        val status: Status,
+    ) : StripeModel {
+        enum class Status {
+            ACCEPTED,
+            NOT_ACCEPTED,
+        }
+    }
+
+    @Parcelize
+    data class Customer(
+        val id: String,
+        val paymentMethods: List<PaymentMethod>,
+        val canDetachPaymentMethod: Boolean,
+    ) : StripeModel
+
+    @Parcelize
+    data class TotalSummaryResponse(
+        val subtotal: Long,
+        val totalDueToday: Long,
+        val totalAmountDue: Long,
+        val discountAmounts: List<DiscountAmount>,
+        val taxAmounts: List<TaxAmount>,
+        val shippingRate: ShippingRate?,
+        val appliedBalance: Long?,
+    ) : StripeModel
+
+    @Parcelize
+    data class DiscountAmount(
+        val amount: Long,
+        val displayName: String,
+    ) : StripeModel
+
+    @Parcelize
+    data class TaxAmount(
+        val amount: Long,
+        val inclusive: Boolean,
+        val displayName: String,
+        val percentage: Double,
+    ) : StripeModel
+
+    @Parcelize
+    data class ShippingRate(
+        val id: String,
+        val amount: Long,
+        val displayName: String,
+        val deliveryEstimate: String?,
+    ) : StripeModel
+
+    @Parcelize
+    data class LineItem(
+        val id: String,
+        val name: String,
+        val quantity: Int,
+        val unitAmount: Long?,
+        val subtotal: Long,
+        val total: Long,
+    ) : StripeModel
+
+    @Parcelize
+    data class AdaptivePricingInfo(
+        val activePresentmentCurrency: String,
+        val integrationAmount: Long,
+        val integrationCurrency: String,
+        val localCurrencyOptions: List<LocalCurrencyOption>,
+    ) : StripeModel
+
+    @Parcelize
+    data class LocalCurrencyOption(
+        val amount: Long,
+        val conversionMarkupBps: Int,
+        val currency: String,
+        val presentmentExchangeRate: String,
+    ) : StripeModel
+
+    enum class Mode {
+        PAYMENT,
+        SETUP,
+        UNKNOWN,
+    }
+
+    enum class Status {
+        OPEN,
+        COMPLETE,
+        EXPIRED,
+        UNKNOWN,
+    }
+
+    enum class TaxStatus {
+        READY,
+        REQUIRES_SHIPPING_ADDRESS,
+        REQUIRES_BILLING_ADDRESS,
+        UNKNOWN,
+    }
+}
+
+internal fun CheckoutSessionResponse.validateShippingCountry(country: String): Result<Unit> {
+    val allowed = allowedShippingCountries ?: return Result.success(Unit)
+    return if (country in allowed) {
+        Result.success(Unit)
+    } else {
+        Result.failure(
+            IllegalArgumentException("Country code '$country' is not in allowedShippingCountries")
+        )
+    }
+}

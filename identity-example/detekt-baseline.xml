@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>CyclomaticComplexMethod:IdentityExampleViewModel.kt:IdentityExampleViewModel$fun postForResult</ID>
+    <ID>LongMethod:ComposeExampleUI.kt:@Composable internal fun ExampleScreen</ID>
+    <ID>LongMethod:ComposeExampleUI.kt:@Composable private fun SubmitView</ID>
+    <ID>LongMethod:DocumentUI.kt:@Composable private fun AllowedDocumentTypes</ID>
+    <ID>LongMethod:DocumentUI.kt:@Composable private fun RequireDocTypes</ID>
+    <ID>LongMethod:IdentityExampleViewModel.kt:IdentityExampleViewModel$fun postForResult</ID>
+    <ID>LongMethod:RequirePhoneVerificationUI.kt:@Composable internal fun RequirePhoneVerificationUI</ID>
+    <ID>TooGenericExceptionCaught:IdentityExampleViewModel.kt:IdentityExampleViewModel$t: Throwable</ID>
+    <ID>UnusedParameter:DocumentUI.kt:scrollState: ScrollState</ID>
+    <ID>UnusedParameter:DocumentUI.kt:shouldShowPhoneNumber: Boolean</ID>
+    <ID>UnusedParameter:IdNumberUI.kt:onSubmissionStateChanged: (IdentitySubmissionState) -> Unit</ID>
+    <ID>UnusedParameter:IdNumberUI.kt:scrollState: ScrollState</ID>
+    <ID>UnusedParameter:IdNumberUI.kt:submissionState: IdentitySubmissionState</ID>
+  </CurrentIssues>
+</SmellBaseline>

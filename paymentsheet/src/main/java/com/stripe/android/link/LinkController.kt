@@ -1,0 +1,997 @@
+package com.stripe.android.link
+
+import android.app.Application
+import android.content.Context
+import android.graphics.drawable.Drawable
+import android.os.Parcelable
+import androidx.activity.ComponentActivity
+import androidx.annotation.RestrictTo
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.lifecycle.SavedStateHandle
+import com.stripe.android.common.configuration.ConfigurationDefaults
+import com.stripe.android.common.ui.DelegateDrawable
+import com.stripe.android.link.injection.DaggerLinkControllerComponent
+import com.stripe.android.link.injection.LinkControllerPresenterComponent
+import com.stripe.android.model.PaymentMethod
+import com.stripe.android.networking.RequestSurface
+import com.stripe.android.paymentsheet.PaymentSheet
+import com.stripe.android.paymentsheet.model.PaymentSelection
+import com.stripe.android.uicore.image.DefaultStripeImageLoader
+import com.stripe.android.uicore.image.rememberDrawablePainter
+import dev.drewhamilton.poko.Poko
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.parcelize.IgnoredOnParcel
+import kotlinx.parcelize.Parcelize
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * A controller to perform various Link operations.
+ */
+@Singleton
+@LinkControllerPreview
+@Suppress("TooManyFunctions")
+class LinkController @Inject internal constructor(
+    private val interactor: LinkControllerInteractor,
+    private val presenterComponentFactory: LinkControllerPresenterComponent.Factory
+) {
+    /**
+     * A preview of the currently selected Link payment method, or null if none is selected.
+     */
+    val paymentMethodPreview: StateFlow<PaymentMethodPreview?> =
+        interactor.selectedPaymentMethodPreview
+
+    /**
+     * The current [State] of the Link controller.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    fun state(context: Context): StateFlow<State> = interactor.state(context)
+
+    /**
+     * Configure the controller with a [Configuration].
+     *
+     * The [state] will reset and the Link session will be reloaded to reflect the new configuration.
+     *
+     * Call this on every `ViewModel` initialization — including after process death — before
+     * [Presenter.present]. Presenting before a successful `configure` yields [PresentResult.Failed]
+     * with a `MissingConfigurationException`.
+     *
+     * @param configuration The [Configuration] to use for Link operations.
+     * @return The result of the configuration.
+     */
+    @LinkControllerPreview
+    suspend fun configure(configuration: Configuration): Result<Unit> {
+        return interactor.configure(configuration)
+    }
+
+    /**
+     * Create a payment method from the currently selected Link payment method.
+     *
+     * This converts the selected Link payment method into a Stripe [PaymentMethod] that can be
+     * used for payment processing. The created payment method will be available in [State.createdPaymentMethod].
+     *
+     * **Note**: This requires a payment method to be selected via [Presenter.presentPaymentMethods] first,
+     * and a valid Link configuration and account. If these requirements are not met, the operation will fail.
+     *
+     * @return The result of the payment method creation.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    suspend fun createPaymentMethod(): CreatePaymentMethodResult {
+        return interactor.createPaymentMethod()
+    }
+
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    suspend fun createPaymentMethodForOnramp(apiKey: String): CreatePaymentMethodResult {
+        return interactor.createPaymentMethod(apiKey)
+    }
+
+    /**
+     * Look up whether the provided email address is associated with an existing Link consumer account.
+     *
+     * This is useful for determining whether to show Link-specific UI elements or messaging to the user
+     * before they interact with Link payment methods.
+     *
+     * @param email The email address to check for an existing Link consumer account.
+     * @return The result of the consumer lookup.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    suspend fun lookupConsumer(email: String): LookupConsumerResult {
+        return interactor.lookupConsumer(email)
+    }
+
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    suspend fun authenticateWithToken(token: String): AuthenticateWithTokenResult {
+        return interactor.authenticateWithToken(token)
+    }
+
+    /**
+     * Update the phone number associated with the current Link consumer account.
+     *
+     * @param phoneNumber The new phone number to associate with the Link account, in E.164 format.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    suspend fun updatePhoneNumber(phoneNumber: String): UpdatePhoneNumberResult {
+        return interactor.updatePhoneNumber(phoneNumber)
+    }
+
+    /**
+     * Log out the current Link consumer.
+     *
+     * @return The result of the logout operation.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    suspend fun logOut(): LogOutResult {
+        return interactor.logOut()
+    }
+
+    /**
+     * Creates a [Presenter] for use with [Presenter.present].
+     *
+     * @param activity The [ComponentActivity] that will host the Link UI.
+     * @param presentCallback Callback to receive results from [Presenter.present].
+     */
+    fun createPresenter(
+        activity: ComponentActivity,
+        presentCallback: PresentCallback,
+    ): Presenter = createPresenter(
+        activity = activity,
+        presentPaymentMethodsCallback = {},
+        authenticationCallback = {},
+        authorizeCallback = {},
+        presentCallback = presentCallback,
+        confirmSetupIntentCallback = ConfirmSetupIntentCallback { },
+    )
+
+    /**
+     * Creates a [Presenter] for the Link controller that can present user-interactive flows.
+     *
+     * @param activity The [ComponentActivity] that will host the Link UI.
+     * @param presentPaymentMethodsCallback Callback to receive results from presenting payment methods.
+     * @param authenticationCallback Callback to receive results from authentication flows.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    fun createPresenter(
+        activity: ComponentActivity,
+        presentPaymentMethodsCallback: PresentPaymentMethodsCallback,
+        authenticationCallback: AuthenticationCallback,
+        authorizeCallback: AuthorizeCallback,
+        presentCallback: PresentCallback = PresentCallback {},
+        confirmSetupIntentCallback: ConfirmSetupIntentCallback = ConfirmSetupIntentCallback { },
+    ): Presenter {
+        return presenterComponentFactory
+            .build(
+                activity = activity,
+                lifecycleOwner = activity,
+                activityResultRegistryOwner = activity,
+                presentPaymentMethodsCallback = presentPaymentMethodsCallback,
+                authenticationCallback = authenticationCallback,
+                authorizeCallback = authorizeCallback,
+                presentCallback = presentCallback,
+                confirmSetupIntentCallback = confirmSetupIntentCallback,
+            )
+            .presenter
+    }
+
+    // Crypto Onramp specific methods
+
+    /**
+     * [CRYPTO ONRAMP ONLY] Register a new Link consumer account.
+     *
+     * @param email The email address to register for the new Link consumer account.
+     * @param phone The phone number associated with the new account.
+     * @param country The country code for the new account, in ISO 3166-1 alpha-2 format.
+     * @param name The name of the consumer. Optional, can be null.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    suspend fun registerConsumer(
+        email: String,
+        phone: String,
+        country: String,
+        name: String?,
+    ): RegisterConsumerResult {
+        return interactor.registerConsumer(
+            email = email,
+            phone = phone,
+            country = country,
+            name = name,
+        )
+    }
+
+    /**
+     * [CRYPTO ONRAMP ONLY] Clear the Link account from local storage.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    fun clearLinkAccount() {
+        return interactor.clearLinkAccount()
+    }
+
+    /**
+     * Configuration for [LinkController].
+     */
+    @LinkControllerPreview
+    class Configuration {
+        private var merchantDisplayName: String
+        private var publishableKey: String?
+        private var stripeAccountId: String?
+        private var email: String?
+        private var phoneNumber: String? = null
+        private var supportedPaymentMethodTypes: List<PaymentMethodType>? = null
+        private var appearance: LinkAppearance? = null
+        private var cardBrandAcceptance: PaymentSheet.CardBrandAcceptance =
+            ConfigurationDefaults.cardBrandAcceptance
+        private var defaultBillingDetails: PaymentSheet.BillingDetails? =
+            ConfigurationDefaults.billingDetails
+        private var billingDetailsCollectionConfiguration: PaymentSheet.BillingDetailsCollectionConfiguration =
+            ConfigurationDefaults.billingDetailsCollectionConfiguration
+        private var allowUserEmailEdits: Boolean = true
+        private var allowLogout: Boolean = true
+        private var paymentMethodTypes: List<String>? = null
+
+        constructor(
+            publishableKey: String,
+            merchantDisplayName: String,
+            email: String,
+            stripeAccountId: String? = null
+        ) {
+            this.merchantDisplayName = merchantDisplayName
+            this.email = email
+            this.publishableKey = publishableKey
+            this.stripeAccountId = stripeAccountId
+        }
+
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        constructor(merchantDisplayName: String, publishableKey: String, stripeAccountId: String? = null) {
+            this.merchantDisplayName = merchantDisplayName
+            this.publishableKey = publishableKey
+            this.stripeAccountId = stripeAccountId
+            this.email = null
+        }
+
+        fun email(email: String?) = apply { this.email = email }
+
+        fun phoneNumber(phoneNumber: String?) = apply { this.phoneNumber = phoneNumber }
+
+        fun supportedPaymentMethodTypes(types: List<PaymentMethodType>?) = apply {
+            this.supportedPaymentMethodTypes = types
+        }
+
+        @LinkControllerPreview
+        fun appearance(appearance: LinkAppearance) = apply { this.appearance = appearance }
+
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        fun cardBrandAcceptance(cardBrandAcceptance: PaymentSheet.CardBrandAcceptance) = apply {
+            this.cardBrandAcceptance = cardBrandAcceptance
+        }
+
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        fun defaultBillingDetails(defaultBillingDetails: PaymentSheet.BillingDetails?) = apply {
+            this.defaultBillingDetails = defaultBillingDetails
+        }
+
+        fun billingDetailsCollectionConfiguration(
+            billingDetailsCollectionConfiguration: PaymentSheet.BillingDetailsCollectionConfiguration
+        ) = apply {
+            this.billingDetailsCollectionConfiguration = billingDetailsCollectionConfiguration
+        }
+
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        fun allowUserEmailEdits(allowUserEmailEdits: Boolean) = apply {
+            this.allowUserEmailEdits = allowUserEmailEdits
+        }
+
+        fun allowLogout(allowLogout: Boolean) = apply { this.allowLogout = allowLogout }
+
+        @LinkControllerPreview
+        fun paymentMethodTypes(paymentMethodTypes: List<String>?) = apply {
+            this.paymentMethodTypes = paymentMethodTypes
+        }
+
+        @Parcelize
+        @Poko
+        internal class State(
+            internal val merchantDisplayName: String,
+            internal val publishableKey: String,
+            internal val stripeAccountId: String?,
+            internal val cardBrandAcceptance: PaymentSheet.CardBrandAcceptance,
+            internal val defaultBillingDetails: PaymentSheet.BillingDetails?,
+            internal val billingDetailsCollectionConfiguration: PaymentSheet.BillingDetailsCollectionConfiguration,
+            internal val allowUserEmailEdits: Boolean,
+            internal val allowLogout: Boolean,
+            internal val linkAppearance: LinkAppearance.State?,
+            internal val email: String?,
+            internal val phoneNumber: String?,
+            internal val supportedPaymentMethodTypes: List<PaymentMethodType>?,
+            internal val paymentMethodTypes: List<String>? = null,
+        ) : Parcelable
+
+        internal fun build(): State = State(
+            merchantDisplayName = merchantDisplayName,
+            publishableKey = publishableKey ?: "",
+            stripeAccountId = stripeAccountId,
+            email = email,
+            phoneNumber = phoneNumber,
+            supportedPaymentMethodTypes = supportedPaymentMethodTypes,
+            cardBrandAcceptance = cardBrandAcceptance,
+            defaultBillingDetails = defaultBillingDetails,
+            billingDetailsCollectionConfiguration = billingDetailsCollectionConfiguration,
+            allowUserEmailEdits = allowUserEmailEdits,
+            allowLogout = allowLogout,
+            linkAppearance = appearance?.build(),
+            paymentMethodTypes = paymentMethodTypes,
+        )
+
+        internal companion object {
+            fun default(context: Context, publishableKey: String, stripeAccountId: String? = null): Configuration {
+                val appName = context.applicationInfo.loadLabel(context.packageManager).toString()
+                return Configuration(
+                    merchantDisplayName = appName,
+                    publishableKey = publishableKey,
+                    stripeAccountId = stripeAccountId,
+                )
+            }
+        }
+    }
+
+    /**
+     * Contains information about the current state of the Link controller.
+     *
+     * @param selectedPaymentMethodPreview A preview of the currently selected payment method from Link, if any.
+     * @param createdPaymentMethod The [PaymentMethod] created from the selected Link payment method, if any.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    @Poko
+    class State
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    constructor(
+        val elementsSessionId: String? = null,
+        val internalLinkAccount: LinkAccount? = null,
+        val merchantLogoUrl: String? = null,
+        val selectedPaymentMethodPreview: PaymentMethodPreview? = null,
+        val createdPaymentMethod: PaymentMethod? = null,
+    ) {
+        /**
+         * Whether the Link consumer account is verified. Null if no account is loaded.
+         */
+        @get:RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        val isConsumerVerified: Boolean?
+            get() = internalLinkAccount?.sessionState?.let { it == SessionState.LoggedIn }
+    }
+
+    /**
+     * A presenter for the Link controller that handles UI operations requiring Activity context.
+     *
+     * The Presenter is tied to an Activity lifecycle and should be created and destroyed appropriately
+     * to avoid memory leaks.
+     */
+    @LinkControllerPreview
+    class Presenter @Inject internal constructor(
+        private val coordinator: LinkControllerCoordinator,
+        private val interactor: LinkControllerInteractor,
+    ) {
+        /**
+         * Present the full Link flow — consumer lookup, authentication, payment method selection,
+         * and payment method creation — in a single call. The result is delivered through the
+         * [PresentCallback] provided to [createPresenter].
+         *
+         * The email and phone number provided in [LinkController.configure] are used for the flow.
+         * [LinkController.configure] must have completed successfully first; otherwise the result is
+         * [PresentResult.Failed] with a `MissingConfigurationException`. If a presentation is already
+         * in progress, this call will be ignored.
+         */
+        fun present() {
+            interactor.presentFull(
+                launcher = coordinator.linkActivityResultLauncher,
+            )
+        }
+
+        /**
+         * Present the Link payment methods selection screen.
+         *
+         * This will launch the Link activity where users can select from their saved payment methods
+         * or add new ones. The result will be communicated through the [PresentPaymentMethodsCallback]
+         * provided during controller creation.
+         *
+         * If a presentation is already in progress, this call will be ignored.
+         *
+         * @param email The email address to use for Link account lookup. If provided and the email
+         * matches an existing Link account, the account's payment methods will be available for selection.
+         * If null, the user will need to sign in or create a Link account.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        fun presentPaymentMethods(
+            email: String?,
+        ) {
+            interactor.presentPaymentMethods(
+                launcher = coordinator.linkActivityResultLauncher,
+                email = email,
+                paymentMethodTypes = null,
+            )
+        }
+
+        /**
+         * Confirm a SetupIntent using the payment method from the most recent successful [present] call.
+         *
+         * This uses the payment method already created during the [present] flow to confirm the
+         * provided SetupIntent. Requires that [present] has completed successfully first; otherwise
+         * the result is [ConfirmSetupIntentResult.Failed].
+         *
+         * The result will be communicated through the [ConfirmSetupIntentCallback] provided
+         * during presenter creation.
+         *
+         * @param clientSecret The client secret of the SetupIntent to confirm.
+         */
+        fun confirmSetupIntent(clientSecret: String) {
+            coordinator.confirmSetupIntent(clientSecret)
+        }
+
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        fun presentPaymentMethodsForOnramp(
+            email: String?,
+            paymentMethodTypes: List<PaymentMethodType>?,
+            collectName: Boolean = false,
+        ) {
+            interactor.presentPaymentMethods(
+                launcher = coordinator.linkActivityResultLauncher,
+                email = email,
+                paymentMethodTypes = paymentMethodTypes,
+                collectName = collectName,
+            )
+        }
+
+        // Crypto Onramp specific methods
+
+        /**
+         * [CRYPTO ONRAMP ONLY] Authenticate with Link.
+         *
+         * This will launch the Link activity where users can authenticate with their Link account.
+         * The authentication flow will close after successful authentication instead of continuing
+         * to payment selection. The result will be communicated through the [AuthenticationCallback]
+         * provided during controller creation.
+         *
+         * If authentication is already in progress, this call will be ignored.
+         *
+         * @param email The email address to use for Link account lookup. If provided and the email
+         * matches an existing Link account, the user will be able to authenticate with that account.
+         * If null, the user will need to sign in or create a Link account.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        fun authenticate(email: String?) {
+            interactor.authenticate(
+                launcher = coordinator.linkActivityResultLauncher,
+                email = email
+            )
+        }
+
+        /**
+         * [CRYPTO ONRAMP ONLY] Authenticate with Link for existing consumers only.
+         *
+         * This will launch the Link activity where users can authenticate with their Link account.
+         * Unlike [authenticate], this method will fail with [NoLinkAccountFoundException] if the
+         * provided email is not associated with an existing Link consumer account, rather than
+         * allowing the user to sign up for a new account.
+         *
+         * The authentication flow will close after successful authentication instead of continuing
+         * to payment selection. The result will be communicated through the [AuthenticationCallback]
+         * provided during controller creation.
+         *
+         * If authentication is already in progress, this call will be ignored.
+         *
+         * @param email The email address to use for Link account lookup. Must be associated with
+         * an existing Link consumer account, otherwise the authentication will fail.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        fun authenticateExistingConsumer(email: String) {
+            interactor.authenticateExistingConsumer(
+                launcher = coordinator.linkActivityResultLauncher,
+                email = email
+            )
+        }
+
+        /**
+         * [CRYPTO ONRAMP ONLY] Authorize a LinkAuthIntent.
+         *
+         * This will launch the Link activity where users can authenticate with their Link account and
+         * submit consent for scopes associated with the LinkAuthIntent.
+         *
+         * The result will be communicated through the [AuthorizeCallback] provided during controller creation.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        fun authorize(linkAuthIntentId: String) {
+            interactor.authorize(
+                launcher = coordinator.linkActivityResultLauncher,
+                linkAuthIntentId = linkAuthIntentId
+            )
+        }
+    }
+
+    /**
+     * Result of presenting Link payment methods to the user.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface PresentPaymentMethodsResult {
+
+        /**
+         * The user successfully selected a payment method from Link.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Success : PresentPaymentMethodsResult
+
+        /**
+         * The user canceled the Link payment methods selection.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Canceled : PresentPaymentMethodsResult
+
+        /**
+         * An error occurred while presenting Link payment methods.
+         *
+         * @param error The error that occurred.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val error: Throwable) : PresentPaymentMethodsResult
+    }
+
+    /**
+     * Result of looking up a consumer account by email.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface LookupConsumerResult {
+
+        /**
+         * The consumer lookup completed successfully.
+         *
+         * @param email The email address that was looked up.
+         * @param isConsumer Whether the email is associated with an existing Link consumer account.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Success internal constructor(val email: String, val isConsumer: Boolean) : LookupConsumerResult
+
+        /**
+         * An error occurred while looking up the consumer.
+         *
+         * @param email The email address that was being looked up.
+         * @param error The error that occurred.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val email: String, val error: Throwable) : LookupConsumerResult
+    }
+
+    /**
+     * Result of logging out from Link.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface LogOutResult {
+
+        /**
+         * The user successfully logged out from Link.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        class Success internal constructor() : LogOutResult
+
+        /**
+         * An error occurred while logging out from Link.
+         *
+         * @param error The error that occurred during logout.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val error: Throwable) : LogOutResult
+    }
+
+    /**
+     * Result of [Presenter.present].
+     */
+    @LinkControllerPreview
+    sealed interface PresentResult {
+
+        /**
+         * The user completed the Link flow and a payment method was created.
+         *
+         * @param paymentMethod The [PaymentMethod] created from the selected Link payment method.
+         */
+        @LinkControllerPreview
+        @Poko
+        class Completed internal constructor(val paymentMethod: PaymentMethod) : PresentResult
+
+        /**
+         * The user canceled the Link flow.
+         */
+        @LinkControllerPreview
+        class Canceled internal constructor() : PresentResult
+
+        /**
+         * An error occurred during the Link flow.
+         *
+         * @param error The error that occurred.
+         */
+        @LinkControllerPreview
+        @Poko
+        class Failed internal constructor(val error: Throwable) : PresentResult
+    }
+
+    /**
+     * Result of creating a payment method from a selected Link payment method.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface CreatePaymentMethodResult {
+
+        /**
+         * The payment method was created successfully.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Success internal constructor(val paymentMethod: PaymentMethod) : CreatePaymentMethodResult
+
+        /**
+         * An error occurred while creating the payment method.
+         *
+         * @param error The error that occurred.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val error: Throwable) : CreatePaymentMethodResult
+    }
+
+    /**
+     * [CRYPTO ONRAMP ONLY] Result of authenticating with Link.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface AuthenticationResult {
+
+        /**
+         * The user successfully authenticated with Link.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Success : AuthenticationResult
+
+        /**
+         * The user canceled the Link authentication.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Canceled : AuthenticationResult
+
+        /**
+         * An error occurred while authenticating with Link.
+         *
+         * @param error The error that occurred.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val error: Throwable) : AuthenticationResult
+    }
+
+    /**
+     * [CRYPTO ONRAMP ONLY] Result of registering a new Link consumer account.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface RegisterConsumerResult {
+
+        /**
+         * The user successfully registered a new Link consumer account.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Success : RegisterConsumerResult
+
+        /**
+         * An error occurred while registering a new Link consumer account.
+         *
+         * @param error The error that occurred.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val error: Throwable) : RegisterConsumerResult
+    }
+
+    /**
+     * [CRYPTO ONRAMP ONLY] Result of authorizing a LinkAuthIntent.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface AuthorizeResult {
+
+        /**
+         * The user granted consent to the scopes requested by the LinkAuthIntent.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Consented : AuthorizeResult
+
+        /**
+         * The user denied consent to the scopes requested by the LinkAuthIntent.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Denied : AuthorizeResult
+
+        /**
+         * The user canceled the authorization.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Canceled : AuthorizeResult
+
+        /**
+         * An error occurred while authorizing the LinkAuthIntent.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val error: Throwable) : AuthorizeResult
+    }
+
+    /**
+     * Result of updating a consumer's phone number.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface UpdatePhoneNumberResult {
+
+        /**
+         * The phone number was updated successfully.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Success : UpdatePhoneNumberResult
+
+        /**
+         * An error occurred while updating the phone number.
+         *
+         * @param error The error that occurred.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val error: Throwable) : UpdatePhoneNumberResult
+    }
+
+    /**
+     * Result of authenticating with a token.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    sealed interface AuthenticateWithTokenResult {
+
+        /**
+         * The authentication was successful.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        data object Success : AuthenticateWithTokenResult
+
+        /**
+         * An error occurred while authenticating.
+         *
+         * @param error The error that occurred.
+         */
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @Poko
+        class Failed internal constructor(val error: Throwable) : AuthenticateWithTokenResult
+    }
+
+    /**
+     * Result of confirming a SetupIntent after payment method creation.
+     */
+    @LinkControllerPreview
+    sealed interface ConfirmSetupIntentResult {
+
+        /**
+         * The SetupIntent was confirmed and the payment method is now attached to the customer.
+         *
+         * @param paymentMethod The payment method that was attached.
+         */
+        @LinkControllerPreview
+        @Poko
+        class Success internal constructor(val paymentMethod: PaymentMethod) : ConfirmSetupIntentResult
+
+        /**
+         * The user canceled the SetupIntent confirmation (e.g., dismissed 3DS authentication).
+         */
+        @LinkControllerPreview
+        data object Canceled : ConfirmSetupIntentResult
+
+        /**
+         * An error occurred while confirming the SetupIntent.
+         *
+         * @param error The error that occurred.
+         */
+        @LinkControllerPreview
+        @Poko
+        class Failed internal constructor(val error: Throwable) : ConfirmSetupIntentResult
+    }
+
+    /**
+     * Callback for receiving results from [Presenter.confirmSetupIntent].
+     */
+    @LinkControllerPreview
+    fun interface ConfirmSetupIntentCallback {
+        fun onConfirmSetupIntentResult(result: ConfirmSetupIntentResult)
+    }
+
+    /**
+     * Callback for receiving results from [Presenter.presentPaymentMethods].
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    fun interface PresentPaymentMethodsCallback {
+        fun onPresentPaymentMethodsResult(result: PresentPaymentMethodsResult)
+    }
+
+    /**
+     * Callback for receiving results from [Presenter.present].
+     */
+    @LinkControllerPreview
+    fun interface PresentCallback {
+        fun onPresentResult(result: PresentResult)
+    }
+
+    /**
+     * [CRYPTO ONRAMP ONLY] Callback for receiving results from [Presenter.authenticate] and
+     * [Presenter.authenticateExistingConsumer].
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    fun interface AuthenticationCallback {
+        fun onAuthenticationResult(result: AuthenticationResult)
+    }
+
+    /**
+     * [CRYPTO ONRAMP ONLY] Callback for receiving results from [Presenter.authorize].
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    fun interface AuthorizeCallback {
+        fun onAuthorizeResult(result: AuthorizeResult)
+    }
+
+    /**
+     * Information about a Link consumer account.
+     *
+     * @param email The email address associated with the Link account.
+     * @param redactedPhoneNumber The phone number associated with the account, with sensitive digits redacted.
+     * @param sessionState The current session state of the Link account.
+     * @param consumerSessionClientSecret The client secret for the consumer session, if available.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    @Parcelize
+    @Poko
+    class LinkAccount(
+        val email: String,
+        val redactedPhoneNumber: String,
+        val sessionState: SessionState,
+        val consumerSessionClientSecret: String?,
+    ) : Parcelable
+
+    /**
+     * Represents the current session state of a Link consumer account.
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    enum class SessionState {
+        /** The user is not logged in to their Link account. */
+        LoggedOut,
+
+        /** The user is logged in but needs to verify their account (e.g., via SMS). */
+        NeedsVerification,
+
+        /** The user is fully logged in and verified. */
+        LoggedIn,
+    }
+
+    /**
+     * The type of payment method to present for selection.
+     */
+    @LinkControllerPreview
+    enum class PaymentMethodType {
+        Card,
+        BankAccount,
+        Generic
+    }
+
+    /**
+     * Preview information for a Link payment method.
+     *
+     * @param imageLoader A suspending function that loads an image representing a payment method; e.g. the VISA logo.
+     * @param label The main label text (e.g., "Link").
+     * @param sublabel Additional descriptive text (e.g., "Visa •••• 4242").
+     */
+    @LinkControllerPreview
+    @Poko
+    class PaymentMethodPreview
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    constructor(
+        @get:RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        val imageLoader: suspend () -> Drawable,
+        val label: String,
+        val sublabel: String?,
+        @get:RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        val type: PaymentMethodType
+    ) {
+
+        /**
+         * An image representing a payment method; e.g. the VISA logo.
+         */
+        @IgnoredOnParcel
+        val icon: Drawable by lazy {
+            DelegateDrawable(imageLoader)
+        }
+
+        /**
+         * An image representing a payment method; e.g. the VISA logo.
+         */
+        val iconPainter: Painter
+            @Composable
+            get() = rememberDrawablePainter(icon)
+
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        companion object {
+            @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+            @JvmStatic
+            fun create(
+                context: Context,
+                details: PaymentMethodPreviewDetails
+            ): PaymentMethodPreview {
+                val imageLoader = DefaultStripeImageLoader(context)
+                val iconLoader = PaymentSelection.IconLoader(context.resources, imageLoader)
+
+                return details.toPreview(context = context, iconLoader = iconLoader)
+            }
+        }
+    }
+
+    /**
+     * Builder for creating a [LinkController] instance.
+     *
+     * Retain the built [LinkController] in a `ViewModel`. Link state is not fully restored
+     * automatically, so call [configure] on every `ViewModel` initialization — including after
+     * process death — before calling [Presenter.present].
+     *
+     * @param application The application context.
+     * @param savedStateHandle The [SavedStateHandle] for persisting state across process death.
+     */
+    @LinkControllerPreview
+    class Builder(
+        private val application: Application,
+        private val savedStateHandle: SavedStateHandle,
+    ) {
+        /**
+         * Build the [LinkController] instance.
+         *
+         * @return A new [LinkController] configured with the specified settings.
+         */
+        fun build(): LinkController {
+            return create(
+                application = application,
+                savedStateHandle = savedStateHandle,
+                requestSurface = RequestSurface.StandaloneLink,
+            )
+        }
+    }
+
+    @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+    companion object {
+        // Onramp entry point — no Configuration required at creation time.
+        // configure() must be called before present().
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @JvmStatic
+        fun create(
+            application: Application,
+            savedStateHandle: SavedStateHandle
+        ): LinkController {
+            return create(
+                application = application,
+                savedStateHandle = savedStateHandle,
+                // Temporarily "android_crypto_onramp" until backend is ready.
+                // Should be "android_link_controller" instead.
+                requestSurface = RequestSurface.CryptoOnramp,
+            )
+        }
+
+        // Internal use only.
+        @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+        @JvmStatic
+        fun create(
+            application: Application,
+            savedStateHandle: SavedStateHandle,
+            requestSurface: RequestSurface,
+        ): LinkController {
+            return DaggerLinkControllerComponent.factory()
+                .build(
+                    application = application,
+                    savedStateHandle = savedStateHandle,
+                    paymentElementCallbackIdentifier = "LinkController",
+                    requestSurface = requestSurface,
+                )
+                .linkController
+        }
+    }
+}

@@ -1,0 +1,56 @@
+package com.stripe.android.model.parsers
+
+import androidx.annotation.RestrictTo
+import com.stripe.android.core.model.StripeJsonUtils.optBoolean
+import com.stripe.android.core.model.StripeJsonUtils.optString
+import com.stripe.android.core.model.parsers.ModelJsonParser
+import com.stripe.android.model.ConsentUi
+import com.stripe.android.model.ConsumerSessionLookup
+import com.stripe.android.model.LinkBrand
+import kotlinx.serialization.json.Json
+import org.json.JSONObject
+
+@RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
+class ConsumerSessionLookupJsonParser : ModelJsonParser<ConsumerSessionLookup> {
+
+    private val format = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+    }
+
+    override fun parse(json: JSONObject): ConsumerSessionLookup {
+        val exists = optBoolean(json, FIELD_EXISTS)
+        val consumerSession = ConsumerSessionJsonParser().parse(json)
+        val errorMessage = optString(json, FIELD_ERROR_MESSAGE)
+        val publishableKey = optString(json, FIELD_PUBLISHABLE_KEY)
+        val displayablePaymentDetails = json.optJSONObject(FIELD_DISPLAYABLE_PAYMENT_DETAILS)?.let {
+            DisplayablePaymentDetailsJsonParser.parse(it)
+        }
+        val consentUi = optString(json, FIELD_CONSENT_UI)
+            ?.let { format.decodeFromString<ConsentUi>(it) }
+        val suggestedEmail = optString(json, FIELD_SUGGESTED_EMAIL)
+        val linkBrand = optString(json, FIELD_LINK_BRAND)?.let { brand ->
+            LinkBrand.entries.firstOrNull { it.value == brand } ?: LinkBrand.Link
+        }
+        return ConsumerSessionLookup(
+            exists = exists,
+            consumerSession = consumerSession,
+            errorMessage = errorMessage,
+            publishableKey = publishableKey,
+            displayablePaymentDetails = displayablePaymentDetails,
+            consentUi = consentUi,
+            suggestedEmail = suggestedEmail,
+            linkBrand = linkBrand,
+        )
+    }
+
+    private companion object {
+        private const val FIELD_EXISTS = "exists"
+        private const val FIELD_ERROR_MESSAGE = "error_message"
+        private const val FIELD_PUBLISHABLE_KEY = "publishable_key"
+        private const val FIELD_DISPLAYABLE_PAYMENT_DETAILS = "displayable_payment_details"
+        private const val FIELD_CONSENT_UI = "consent_ui"
+        private const val FIELD_SUGGESTED_EMAIL = "suggested_email"
+        private const val FIELD_LINK_BRAND = "link_brand"
+    }
+}

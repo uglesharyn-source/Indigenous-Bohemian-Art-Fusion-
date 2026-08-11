@@ -1,0 +1,1094 @@
+package com.stripe.android.paymentsheet
+
+import androidx.lifecycle.SavedStateHandle
+import app.cash.turbine.ReceiveTurbine
+import app.cash.turbine.Turbine
+import app.cash.turbine.test
+import com.google.common.truth.Truth.assertThat
+import com.stripe.android.common.model.PaymentMethodRemovePermission
+import com.stripe.android.link.TestFactory
+import com.stripe.android.link.model.LinkAccount
+import com.stripe.android.lpmfoundations.paymentmethod.CustomerMetadata
+import com.stripe.android.lpmfoundations.paymentmethod.PaymentMethodMetadata
+import com.stripe.android.lpmfoundations.paymentmethod.PaymentMethodMetadataFactory
+import com.stripe.android.lpmfoundations.paymentmethod.PaymentMethodMetadataFixtures
+import com.stripe.android.lpmfoundations.paymentmethod.PaymentMethodSaveConsentBehavior
+import com.stripe.android.model.CardBrand
+import com.stripe.android.model.LinkBrand
+import com.stripe.android.model.PaymentMethod
+import com.stripe.android.model.PaymentMethodFixtures
+import com.stripe.android.model.PaymentMethodFixtures.toDisplayableSavedPaymentMethod
+import com.stripe.android.paymentsheet.PaymentSheetFixtures.EMPTY_CUSTOMER_STATE
+import com.stripe.android.paymentsheet.analytics.FakeEventReporter
+import com.stripe.android.paymentsheet.model.PaymentSelection
+import com.stripe.android.paymentsheet.navigation.PaymentSheetScreen
+import com.stripe.android.testing.CleanupTestRule
+import com.stripe.android.testing.PaymentMethodFactory
+import com.stripe.android.ui.core.cbc.CardBrandChoiceEligibility
+import com.stripe.android.uicore.utils.stateFlowOf
+import com.stripe.android.utils.FakeSavedPaymentMethodRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
+import org.junit.Rule
+import org.junit.Test
+import org.mockito.kotlin.mock
+
+@Suppress("LargeClass")
+class SavedPaymentMethodMutatorTest {
+
+    @get:Rule
+    val coroutineScopeCleanupRule = CleanupTestRule<CoroutineScope> { cancel() }
+
+    @Test
+    fun `paymentOptionsItems uses the Link account brand`() = runScenario(
+        paymentMethodMetadata = PaymentMethodMetadataFactory.create(
+            linkBrand = LinkBrand.Link,
+        ),
+        isLinkEnabled = stateFlowOf(true),
+        linkAccount = stateFlowOf(
+            LinkAccount(TestFactory.CONSUMER_SESSION.copy(linkBrand = LinkBrand.Onelink))
+        ),
+    ) {
+        assertThat(savedPaymentMethodMutator.paymentOptionsItems.value)
+            .contains(PaymentOptionsItem.Link(LinkBrand.Onelink))
+    }
+
+    @Test
+    fun `canEdit is correct when no payment methods`() = runScenario {
+        savedPaymentMethodMutator.canEdit.test {
+            assertThat(awaitItem()).isFalse()
+
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf()
+                )
+            )
+
+            // Should still be false so expect no more events
+            expectNoEvents()
+        }
+    }
+
+    @Test
+    fun `canEdit is correct when user has permissions to remove last PM`() = runScenario(
+        paymentMethodMetadata = PaymentMethodMetadataFactory.create(
+            hasCustomerConfiguration = true,
+            removePaymentMethod = PaymentMethodRemovePermission.Full,
+            saveConsent = PaymentMethodSaveConsentBehavior.Legacy,
+            canRemoveLastPaymentMethod = true,
+            canUpdateCardExpiryAndBillingDetails = false,
+        )
+    ) {
+        savedPaymentMethodMutator.canEdit.test {
+            assertThat(awaitItem()).isFalse()
+
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(PaymentMethodFixtures.CARD_PAYMENT_METHOD)
+                )
+            )
+            assertThat(awaitItem()).isTrue()
+        }
+    }
+
+    @Test
+    fun `canEdit is correct when when user does not have permissions to remove last PM`() = runScenario(
+        paymentMethodMetadata = PaymentMethodMetadataFactory.create(
+            hasCustomerConfiguration = true,
+            removePaymentMethod = PaymentMethodRemovePermission.Full,
+            saveConsent = PaymentMethodSaveConsentBehavior.Legacy,
+            canRemoveLastPaymentMethod = false,
+            canUpdateCardExpiryAndBillingDetails = false,
+        )
+    ) {
+        savedPaymentMethodMutator.canEdit.test {
+            assertThat(awaitItem()).isFalse()
+
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(
+                        PaymentMethodFixtures.CARD_PAYMENT_METHOD,
+                        PaymentMethodFixtures.CARD_WITH_NETWORKS_PAYMENT_METHOD
+                    )
+                )
+            )
+            assertThat(awaitItem()).isTrue()
+
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(
+                        PaymentMethodFixtures.CARD_WITH_NETWORKS_PAYMENT_METHOD,
+                    )
+                )
+            )
+            assertThat(awaitItem()).isFalse()
+        }
+    }
+
+    @Test
+    fun `canEdit is correct CBC is enabled`() = runScenario(
+        paymentMethodMetadata = PaymentMethodMetadataFactory.create(
+            hasCustomerConfiguration = true,
+            cbcEligibility = CardBrandChoiceEligibility.Eligible(listOf(CardBrand.Visa, CardBrand.CartesBancaires)),
+        )
+    ) {
+        savedPaymentMethodMutator.canEdit.test {
+            assertThat(awaitItem()).isFalse()
+
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(
+                        PaymentMethodFixtures.CARD_WITH_NETWORKS_PAYMENT_METHOD,
+                    )
+                )
+            )
+            assertThat(awaitItem()).isTrue()
+
+            customerStateHolder.setCustomerState(null)
+            assertThat(awaitItem()).isFalse()
+
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(
+                        PaymentMethodFixtures.CARD_WITH_NETWORKS_PAYMENT_METHOD
+                    ),
+                )
+            )
+            assertThat(awaitItem()).isTrue()
+        }
+    }
+
+    @Test
+    fun `removePaymentMethod triggers async removal`() {
+        var calledDetach = false
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onDetachPaymentMethod = { paymentMethodId ->
+                assertThat(paymentMethodId).isEqualTo(PaymentMethodFixtures.CARD_PAYMENT_METHOD.id)
+                calledDetach = true
+                Result.failure(IllegalStateException())
+            }
+        )
+
+        runScenario(
+            savedPaymentMethodRepository = savedPaymentMethodRepository,
+        ) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(
+                        PaymentMethodFixtures.CARD_PAYMENT_METHOD
+                    ),
+                )
+            )
+
+            customerStateHolder.paymentMethods.test {
+                assertThat(awaitItem().size).isEqualTo(1)
+                savedPaymentMethodMutator.removePaymentMethod(PaymentMethodFixtures.CARD_PAYMENT_METHOD)
+                assertThat(awaitItem()).isEmpty()
+            }
+
+            assertThat(postPaymentMethodRemovedTurbine.awaitItem()).isEqualTo(Unit)
+            assertThat(eventReporter.removePaymentMethodCalls.awaitItem().code).isEqualTo("card")
+            assertThat(savedPaymentMethodRepository.detachRequests.awaitItem().paymentMethodId)
+                .isEqualTo(PaymentMethodFixtures.CARD_PAYMENT_METHOD.id)
+
+            assertThat(calledDetach).isTrue()
+        }
+    }
+
+    @Test
+    fun `removePaymentMethod with no CustomerConfiguration available, should not attempt detach`() {
+        var calledDetach = false
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onDetachPaymentMethod = {
+                calledDetach = true
+                throw AssertionError("Not expected")
+            }
+        )
+
+        runScenario(
+            savedPaymentMethodRepository = savedPaymentMethodRepository,
+            paymentMethodMetadata = PaymentMethodMetadataFactory.create(),
+        ) {
+            savedPaymentMethodMutator.removePaymentMethod(PaymentMethodFixtures.CARD_PAYMENT_METHOD)
+
+            assertThat(calledDetach).isFalse()
+        }
+    }
+
+    @Test
+    fun `removePaymentMethod with CheckoutSession metadata passes CheckoutSession to repository`() {
+        val checkoutSessionMetadata = CustomerMetadata.CheckoutSession(
+            sessionId = "cs_test_123",
+            customerId = "cus_123",
+            removePaymentMethod = PaymentMethodRemovePermission.Full,
+            saveConsent = PaymentMethodSaveConsentBehavior.Disabled(overrideAllowRedisplay = null),
+        )
+
+        runScenario(
+            paymentMethodMetadata = PaymentMethodMetadataFactory.create(
+                hasCustomerConfiguration = true,
+            ).copy(customerMetadata = checkoutSessionMetadata),
+        ) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(PaymentMethodFixtures.CARD_PAYMENT_METHOD),
+                )
+            )
+
+            savedPaymentMethodMutator.removePaymentMethod(PaymentMethodFixtures.CARD_PAYMENT_METHOD)
+
+            val detachRequest = savedPaymentMethodRepository.detachRequests.awaitItem()
+            assertThat(detachRequest.paymentMethodId).isEqualTo(PaymentMethodFixtures.CARD_PAYMENT_METHOD.id)
+            assertThat(detachRequest.customerMetadata).isInstanceOf(CustomerMetadata.CheckoutSession::class.java)
+            assertThat((detachRequest.customerMetadata as CustomerMetadata.CheckoutSession).sessionId)
+                .isEqualTo("cs_test_123")
+
+            assertThat(postPaymentMethodRemovedTurbine.awaitItem()).isEqualTo(Unit)
+            assertThat(eventReporter.removePaymentMethodCalls.awaitItem().code).isEqualTo("card")
+        }
+    }
+
+    @Test
+    fun `Sets editing to false when removing the last payment method while editing`() = runScenario(
+        paymentMethodMetadata = PaymentMethodMetadataFactory.create(
+            hasCustomerConfiguration = true,
+            removePaymentMethod = PaymentMethodRemovePermission.Full,
+            saveConsent = PaymentMethodSaveConsentBehavior.Legacy,
+            canRemoveLastPaymentMethod = true,
+            canUpdateCardExpiryAndBillingDetails = false,
+        )
+    ) {
+        val customerPaymentMethods = PaymentMethodFixtures.createCards(1)
+        customerStateHolder.setCustomerState(EMPTY_CUSTOMER_STATE.copy(paymentMethods = customerPaymentMethods))
+
+        savedPaymentMethodMutator.editing.test {
+            assertThat(awaitItem()).isFalse()
+
+            savedPaymentMethodMutator.toggleEditing()
+            assertThat(awaitItem()).isTrue()
+
+            savedPaymentMethodMutator.removePaymentMethod(customerPaymentMethods.single())
+            assertThat(awaitItem()).isFalse()
+        }
+
+        assertThat(postPaymentMethodRemovedTurbine.awaitItem()).isEqualTo(Unit)
+        assertThat(eventReporter.removePaymentMethodCalls.awaitItem().code).isEqualTo("card")
+        assertThat(savedPaymentMethodRepository.detachRequests.awaitItem().paymentMethodId)
+            .isEqualTo(customerPaymentMethods.single().id)
+    }
+
+    @Test
+    fun `updatePaymentMethod should call through to the callback`() = runScenario(
+        paymentMethodMetadata =
+        PaymentMethodMetadataFactory.create(
+            hasCustomerConfiguration = true,
+            removePaymentMethod = PaymentMethodRemovePermission.Full,
+            saveConsent = PaymentMethodSaveConsentBehavior.Legacy,
+            canRemoveLastPaymentMethod = true,
+            canUpdateCardExpiryAndBillingDetails = true,
+        )
+    ) {
+        val cards = PaymentMethodFixtures.createCards(3)
+        val expectedPaymentMethod = cards[0].toDisplayableSavedPaymentMethod()
+
+        customerStateHolder.setCustomerState(
+            createCustomerState(
+                paymentMethods = cards,
+            )
+        )
+
+        savedPaymentMethodMutator.updatePaymentMethod(expectedPaymentMethod)
+        updatePaymentMethodTurbine.awaitItem().apply {
+            assertThat(paymentMethod).isEqualTo(expectedPaymentMethod)
+            assertThat(canRemove).isTrue()
+        }
+    }
+
+    @Test
+    fun `updatePaymentMethod should be called correctly when 1 PM & cannot remove last PM`() = runScenario(
+        paymentMethodMetadata = PaymentMethodMetadataFactory.create(
+            hasCustomerConfiguration = true,
+            removePaymentMethod = PaymentMethodRemovePermission.Full,
+            saveConsent = PaymentMethodSaveConsentBehavior.Legacy,
+            canRemoveLastPaymentMethod = false,
+            canUpdateCardExpiryAndBillingDetails = true,
+        )
+    ) {
+        val cards = PaymentMethodFixtures.createCards(1)
+        val expectedPaymentMethod = cards[0].toDisplayableSavedPaymentMethod()
+
+        customerStateHolder.setCustomerState(
+            createCustomerState(
+                paymentMethods = cards,
+            )
+        )
+
+        savedPaymentMethodMutator.updatePaymentMethod(expectedPaymentMethod)
+
+        updatePaymentMethodTurbine.awaitItem().apply {
+            assertThat(paymentMethod).isEqualTo(expectedPaymentMethod)
+            assertThat(canRemove).isFalse()
+        }
+    }
+
+    @Test
+    fun `Removing selected payment method clears selection`() = runScenario {
+        val cards = PaymentMethodFixtures.createCards(3)
+        customerStateHolder.setCustomerState(EMPTY_CUSTOMER_STATE.copy(paymentMethods = cards))
+
+        val selection = PaymentSelection.Saved(cards[1])
+        selectionSource.value = selection
+
+        selectionSource.test {
+            assertThat(awaitItem()).isEqualTo(selection)
+            savedPaymentMethodMutator.removePaymentMethod(selection.paymentMethod)
+            assertThat(awaitItem()).isNull()
+        }
+
+        assertThat(postPaymentMethodRemovedTurbine.awaitItem()).isEqualTo(Unit)
+        assertThat(eventReporter.removePaymentMethodCalls.awaitItem().code).isEqualTo("card")
+        assertThat(savedPaymentMethodRepository.detachRequests.awaitItem().paymentMethodId)
+            .isEqualTo(selection.paymentMethod.id)
+    }
+
+    @Test
+    fun `Removing payment methods without any PM selected should correctly send analytic events`() = runScenario {
+        val cards = PaymentMethodFixtures.createCards(3)
+        customerStateHolder.setCustomerState(EMPTY_CUSTOMER_STATE.copy(paymentMethods = cards))
+
+        for (card in cards) {
+            savedPaymentMethodMutator.removePaymentMethod(card)
+            assertThat(postPaymentMethodRemovedTurbine.awaitItem()).isEqualTo(Unit)
+            assertThat(eventReporter.removePaymentMethodCalls.awaitItem().code).isEqualTo("card")
+            assertThat(savedPaymentMethodRepository.detachRequests.awaitItem().paymentMethodId)
+                .isEqualTo(card.id)
+        }
+    }
+
+    @Test
+    fun `updatePaymentMethod calls through to callback`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        runScenario {
+            savedPaymentMethodMutator.updatePaymentMethod(displayableSavedPaymentMethod)
+
+            updatePaymentMethodTurbine.awaitItem().apply {
+                assertThat(paymentMethod).isEqualTo(displayableSavedPaymentMethod)
+                assertThat(canRemove).isFalse()
+            }
+        }
+    }
+
+    @Test
+    fun `updatePaymentMethod performRemove callback`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val calledDetach = Turbine<Boolean>()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onDetachPaymentMethod = { paymentMethodId ->
+                assertThat(paymentMethodId).isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+                calledDetach.add(true)
+                Result.success(displayableSavedPaymentMethod.paymentMethod)
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+
+            savedPaymentMethodMutator.updatePaymentMethod(displayableSavedPaymentMethod)
+
+            updatePaymentMethodTurbine.awaitItem().performRemove()
+
+            assertThat(calledDetach.awaitItem()).isTrue()
+            assertThat(prePaymentMethodRemovedTurbine.awaitItem()).isNotNull()
+            assertThat(eventReporter.removePaymentMethodCalls.awaitItem().code).isEqualTo("card")
+            assertThat(postPaymentMethodRemovedTurbine.awaitItem()).isNotNull()
+            assertThat(savedPaymentMethodRepository.detachRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+
+            assertThat(customerStateHolder.paymentMethods.value).isEmpty()
+        }
+
+        calledDetach.ensureAllEventsConsumed()
+    }
+
+    @Test
+    fun `removePaymentMethodInEditScreen calls prePaymentMethodRemoveActions and postPaymentMethodRemoveActions`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val calledDetach = Turbine<Boolean>()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onDetachPaymentMethod = { paymentMethodId ->
+                assertThat(paymentMethodId).isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+                calledDetach.add(true)
+                Result.success(displayableSavedPaymentMethod.paymentMethod)
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+
+            savedPaymentMethodMutator.removePaymentMethodInEditScreen(displayableSavedPaymentMethod.paymentMethod)
+
+            assertThat(calledDetach.awaitItem()).isTrue()
+            assertThat(prePaymentMethodRemovedTurbine.awaitItem()).isNotNull()
+            assertThat(eventReporter.removePaymentMethodCalls.awaitItem().code).isEqualTo("card")
+            assertThat(postPaymentMethodRemovedTurbine.awaitItem()).isNotNull()
+            assertThat(savedPaymentMethodRepository.detachRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+
+            assertThat(customerStateHolder.paymentMethods.value).isEmpty()
+        }
+
+        calledDetach.ensureAllEventsConsumed()
+    }
+
+    @Test
+    fun `updatePaymentMethod performRemove failure callback`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val calledDetach = Turbine<Boolean>()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onDetachPaymentMethod = { paymentMethodId ->
+                assertThat(paymentMethodId).isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+                calledDetach.add(true)
+                Result.failure(IllegalStateException("Test failure."))
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+
+            savedPaymentMethodMutator.updatePaymentMethod(displayableSavedPaymentMethod)
+
+            updatePaymentMethodTurbine.awaitItem().performRemove()
+
+            assertThat(calledDetach.awaitItem()).isTrue()
+            assertThat(savedPaymentMethodRepository.detachRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+
+            assertThat(customerStateHolder.paymentMethods.value).hasSize(1)
+        }
+
+        calledDetach.ensureAllEventsConsumed()
+    }
+
+    @Test
+    fun `updatePaymentMethod updateExecutor callback`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val calledUpdate = Turbine<Boolean>()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onUpdatePaymentMethod = {
+                calledUpdate.add(true)
+                Result.success(
+                    displayableSavedPaymentMethod.paymentMethod.copy(
+                        card = displayableSavedPaymentMethod.paymentMethod.card?.copy(brand = CardBrand.CartesBancaires)
+                    )
+                )
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+
+            savedPaymentMethodMutator.updatePaymentMethod(displayableSavedPaymentMethod)
+
+            assertThat(customerStateHolder.paymentMethods.value.first().card?.brand).isEqualTo(CardBrand.Unknown)
+            updatePaymentMethodTurbine.awaitItem()
+                .updateExecutor(CardUpdateParams(cardBrand = CardBrand.CartesBancaires))
+
+            assertThat(calledUpdate.awaitItem()).isTrue()
+            assertThat(savedPaymentMethodRepository.updateRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+
+            val paymentMethods = customerStateHolder.paymentMethods.value
+            assertThat(paymentMethods).hasSize(1)
+            assertThat(paymentMethods.first().card?.brand).isEqualTo(CardBrand.CartesBancaires)
+            eventReporter.assertUpdatePaymentMethodSucceededCalls(CardBrand.CartesBancaires)
+        }
+
+        calledUpdate.ensureAllEventsConsumed()
+    }
+
+    @Test
+    fun `updatePaymentMethod updateExecutor analytics events received`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onUpdatePaymentMethod = {
+                Result.success(
+                    displayableSavedPaymentMethod.paymentMethod.copy(
+                        card = displayableSavedPaymentMethod.paymentMethod.card?.copy(brand = CardBrand.CartesBancaires)
+                    )
+                )
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+
+            savedPaymentMethodMutator.updatePaymentMethod(displayableSavedPaymentMethod)
+
+            updatePaymentMethodTurbine.awaitItem()
+                .updateExecutor(CardUpdateParams(cardBrand = CardBrand.CartesBancaires))
+
+            assertThat(savedPaymentMethodRepository.updateRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+            eventReporter.assertUpdatePaymentMethodSucceededCalls(CardBrand.CartesBancaires)
+        }
+    }
+
+    @Test
+    fun `modifyCardPaymentMethod updates card`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val calledUpdate = Turbine<Boolean>()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onUpdatePaymentMethod = {
+                calledUpdate.add(true)
+                Result.success(
+                    displayableSavedPaymentMethod.paymentMethod.copy(
+                        card = displayableSavedPaymentMethod.paymentMethod.card?.copy(brand = CardBrand.CartesBancaires)
+                    )
+                )
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+            assertThat(customerStateHolder.paymentMethods.value.first().card?.brand).isEqualTo(CardBrand.Unknown)
+
+            savedPaymentMethodMutator.modifyCardPaymentMethod(
+                paymentMethod = displayableSavedPaymentMethod.paymentMethod,
+                cardUpdateParams = CardUpdateParams(cardBrand = CardBrand.CartesBancaires),
+            )
+
+            assertThat(calledUpdate.awaitItem()).isTrue()
+            assertThat(savedPaymentMethodRepository.updateRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+            val paymentMethods = customerStateHolder.paymentMethods.value
+            assertThat(paymentMethods).hasSize(1)
+            assertThat(paymentMethods.first().card?.brand).isEqualTo(CardBrand.CartesBancaires)
+            eventReporter.assertUpdatePaymentMethodSucceededCalls(CardBrand.CartesBancaires)
+        }
+
+        calledUpdate.ensureAllEventsConsumed()
+    }
+
+    @Test
+    fun `successful card modification updates selected payment method if already selected`() {
+        val paymentMethod = PaymentMethodFactory.cards(1).first()
+        val selection = MutableStateFlow<PaymentSelection?>(PaymentSelection.Saved(paymentMethod))
+        val savedPaymentMethodRepository = createRepositoryThatUpdatesCard(paymentMethod)
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository, selection = selection) {
+            setupCustomerState(paymentMethod)
+            savedPaymentMethodMutator.modifyCardPaymentMethod(
+                paymentMethod = paymentMethod,
+                cardUpdateParams = CardUpdateParams(cardBrand = CardBrand.CartesBancaires),
+            )
+
+            // Verify
+            assertThat(savedPaymentMethodRepository.updateRequests.awaitItem().paymentMethodId)
+                .isEqualTo(paymentMethod.id)
+            val newSelection = selection.value as? PaymentSelection.Saved
+            assertThat(newSelection?.paymentMethod?.id).isEqualTo(paymentMethod.id)
+            eventReporter.assertUpdatePaymentMethodSucceededCalls(CardBrand.CartesBancaires)
+        }
+    }
+
+    @Test
+    fun `successful card modification does not update selected payment method if not already selected`() {
+        val paymentMethod = PaymentMethodFactory.cards(1).first()
+        val differentPaymentMethodId = "1234"
+        val selection = MutableStateFlow<PaymentSelection?>(
+            PaymentSelection.Saved(paymentMethod.copy(id = differentPaymentMethodId))
+        )
+        val savedPaymentMethodRepository = createRepositoryThatUpdatesCard(paymentMethod)
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository, selection = selection) {
+            setupCustomerState(paymentMethod)
+
+            savedPaymentMethodMutator.modifyCardPaymentMethod(
+                paymentMethod = paymentMethod,
+                cardUpdateParams = CardUpdateParams(cardBrand = CardBrand.CartesBancaires),
+            )
+
+            assertThat(savedPaymentMethodRepository.updateRequests.awaitItem().paymentMethodId)
+                .isEqualTo(paymentMethod.id)
+            val newSelection = selection.value as? PaymentSelection.Saved
+            assertThat(newSelection?.paymentMethod?.id).isNotEqualTo(paymentMethod.id)
+            assertThat(newSelection?.paymentMethod?.id).isEqualTo(differentPaymentMethodId)
+            eventReporter.assertUpdatePaymentMethodSucceededCalls(CardBrand.CartesBancaires)
+        }
+    }
+
+    private fun createRepositoryThatUpdatesCard(paymentMethod: PaymentMethod): FakeSavedPaymentMethodRepository {
+        val displayable = paymentMethod.toDisplayableSavedPaymentMethod()
+        return FakeSavedPaymentMethodRepository(
+            onUpdatePaymentMethod = {
+                Result.success(
+                    displayable.paymentMethod.copy(
+                        card = displayable.paymentMethod.card?.copy(brand = CardBrand.CartesBancaires)
+                    )
+                )
+            }
+        )
+    }
+
+    @Test
+    fun `modifyCardPaymentMethod analytics events received`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onUpdatePaymentMethod = {
+                Result.success(
+                    displayableSavedPaymentMethod.paymentMethod.copy(
+                        card = displayableSavedPaymentMethod.paymentMethod.card?.copy(brand = CardBrand.CartesBancaires)
+                    )
+                )
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+
+            savedPaymentMethodMutator.modifyCardPaymentMethod(
+                paymentMethod = displayableSavedPaymentMethod.paymentMethod,
+                cardUpdateParams = CardUpdateParams(cardBrand = CardBrand.CartesBancaires)
+            )
+
+            assertThat(savedPaymentMethodRepository.updateRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+            eventReporter.assertUpdatePaymentMethodSucceededCalls(CardBrand.CartesBancaires)
+        }
+    }
+
+    @Test
+    fun `updatePaymentMethod updateExecutor failure callback`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val calledUpdate = Turbine<Boolean>()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onUpdatePaymentMethod = {
+                calledUpdate.add(true)
+                Result.failure(IllegalStateException("Test failure"))
+            }
+        )
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+
+            savedPaymentMethodMutator.updatePaymentMethod(displayableSavedPaymentMethod)
+
+            assertThat(customerStateHolder.paymentMethods.value.first().card?.brand).isEqualTo(CardBrand.Unknown)
+            updatePaymentMethodTurbine.awaitItem()
+                .updateExecutor(CardUpdateParams(cardBrand = CardBrand.CartesBancaires))
+
+            assertThat(calledUpdate.awaitItem()).isTrue()
+            assertThat(savedPaymentMethodRepository.updateRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+
+            val paymentMethods = customerStateHolder.paymentMethods.value
+            assertThat(paymentMethods).hasSize(1)
+            assertThat(paymentMethods.first().card?.brand).isEqualTo(CardBrand.Unknown)
+            eventReporter.assertUpdatePaymentMethodFailedCalls(CardBrand.CartesBancaires)
+        }
+
+        calledUpdate.ensureAllEventsConsumed()
+    }
+
+    @Test
+    fun `updatePaymentMethod updateExecutor failure analytics events received`() {
+        val displayableSavedPaymentMethod = PaymentMethodFactory.cards(1).first().toDisplayableSavedPaymentMethod()
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onUpdatePaymentMethod = {
+                Result.failure(IllegalStateException("Test failure"))
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = listOf(displayableSavedPaymentMethod.paymentMethod),
+                )
+            )
+
+            savedPaymentMethodMutator.updatePaymentMethod(displayableSavedPaymentMethod)
+            updatePaymentMethodTurbine.awaitItem()
+                .updateExecutor(CardUpdateParams(cardBrand = CardBrand.CartesBancaires))
+
+            assertThat(savedPaymentMethodRepository.updateRequests.awaitItem().paymentMethodId)
+                .isEqualTo(displayableSavedPaymentMethod.paymentMethod.id)
+            eventReporter.assertUpdatePaymentMethodFailedCalls(CardBrand.CartesBancaires)
+        }
+    }
+
+    @Test
+    fun `setDefaultPaymentMethod updates default payment method on success`() {
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onSetDefaultPaymentMethod = { Result.success(mock()) }
+        )
+        val paymentMethods = PaymentMethodFixtures.createCards(3)
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = paymentMethods,
+                    defaultPaymentMethodId = paymentMethods.first().id,
+                )
+            )
+
+            val newDefaultPaymentMethod = paymentMethods[1]
+            savedPaymentMethodMutator.setDefaultPaymentMethod(newDefaultPaymentMethod)
+
+            customerStateHolder.customer.test {
+                assertThat(awaitItem()?.defaultPaymentMethodId).isEqualTo(newDefaultPaymentMethod.id)
+            }
+            assertThat(savedPaymentMethodRepository.setDefaultPaymentMethodRequests.awaitItem().paymentMethodId)
+                .isEqualTo(newDefaultPaymentMethod.id)
+            eventReporter.assertAsDefaultPaymentMethodSucceededCalls(paymentMethods)
+        }
+    }
+
+    @Test
+    fun `setDefaultPaymentMethod updates selection on success`() {
+        val paymentMethods = PaymentMethodFixtures.createCards(3)
+
+        runScenario(
+            savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+                onSetDefaultPaymentMethod = { Result.success(mock()) }
+            )
+        ) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = paymentMethods,
+                    defaultPaymentMethodId = paymentMethods.first().id,
+                )
+            )
+
+            val newDefaultPaymentMethod = paymentMethods[1]
+            savedPaymentMethodMutator.setDefaultPaymentMethod(newDefaultPaymentMethod)
+
+            selectionSource.test {
+                assertThat(awaitItem()).isEqualTo(PaymentSelection.Saved(newDefaultPaymentMethod))
+            }
+            assertThat(savedPaymentMethodRepository.setDefaultPaymentMethodRequests.awaitItem().paymentMethodId)
+                .isEqualTo(newDefaultPaymentMethod.id)
+            eventReporter.assertAsDefaultPaymentMethodSucceededCalls(paymentMethods)
+        }
+    }
+
+    @Test
+    fun `setDefaultPaymentMethod success analytics events received`() {
+        val paymentMethods = PaymentMethodFixtures.createCards(3)
+
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onSetDefaultPaymentMethod = {
+                Result.success(mock())
+            }
+        )
+
+        runScenario(savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = paymentMethods,
+                    defaultPaymentMethodId = paymentMethods.first().id,
+                )
+            )
+
+            savedPaymentMethodMutator.setDefaultPaymentMethod(paymentMethods[1])
+            assertThat(savedPaymentMethodRepository.setDefaultPaymentMethodRequests.awaitItem().paymentMethodId)
+                .isEqualTo(paymentMethods[1].id)
+            eventReporter.assertAsDefaultPaymentMethodSucceededCalls(paymentMethods)
+        }
+    }
+
+    @Test
+    fun `setDefaultPaymentMethod failed analytics events received`() {
+        val paymentMethods = PaymentMethodFixtures.createCards(3)
+
+        val savedPaymentMethodRepository = FakeSavedPaymentMethodRepository(
+            onSetDefaultPaymentMethod = {
+                Result.failure(IllegalStateException("Test failure"))
+            }
+        )
+
+        val eventReporter = FakeEventReporter()
+
+        runScenario(eventReporter = eventReporter, savedPaymentMethodRepository = savedPaymentMethodRepository) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = paymentMethods,
+                    defaultPaymentMethodId = paymentMethods.first().id,
+                )
+            )
+
+            savedPaymentMethodMutator.setDefaultPaymentMethod(paymentMethods[1])
+
+            assertThat(savedPaymentMethodRepository.setDefaultPaymentMethodRequests.awaitItem().paymentMethodId)
+                .isEqualTo(paymentMethods[1].id)
+            val failedCall = eventReporter.setAsDefaultPaymentMethodFailedCalls.awaitItem()
+            assertThat(failedCall.error.message).isEqualTo("Test failure")
+            assertThat(failedCall.paymentMethodType).isNotNull()
+            assertThat(failedCall.paymentMethodType).isEqualTo(paymentMethods[1].type?.code)
+        }
+    }
+
+    @Test
+    fun `defaultPaymentMethodId correctly set when isPaymentMethodSetAsDefaultEnabled`() {
+        runScenarioForTestingDefaultPaymentMethod(
+            initialDefaultPaymentMethodIndex = 0,
+            isPaymentMethodSetAsDefaultEnabled = true,
+        ) { _, savedPaymentMethodMutator, paymentMethods ->
+            assertThat(savedPaymentMethodMutator.defaultPaymentMethodId.value).isEqualTo(paymentMethods.first().id)
+        }
+    }
+
+    @Test
+    fun `defaultPaymentMethodId correctly set when isPaymentMethodSetAsDefaultEnabled = false`() {
+        runScenarioForTestingDefaultPaymentMethod(
+            initialDefaultPaymentMethodIndex = 0,
+            isPaymentMethodSetAsDefaultEnabled = false,
+        ) { _, savedPaymentMethodMutator, _ ->
+            assertThat(savedPaymentMethodMutator.defaultPaymentMethodId.value).isEqualTo(null)
+        }
+    }
+
+    @Test
+    fun `defaultPaymentMethodId correctly set as null when no defaultPaymentMethodId`() {
+        runScenarioForTestingDefaultPaymentMethod(
+            initialDefaultPaymentMethodIndex = null,
+            isPaymentMethodSetAsDefaultEnabled = true,
+        ) { _, savedPaymentMethodMutator, _ ->
+            assertThat(savedPaymentMethodMutator.defaultPaymentMethodId.value).isEqualTo(null)
+        }
+    }
+
+    @Test
+    fun `defaultPaymentMethodId changes correctly when set for the first time`() {
+        runScenarioForTestingDefaultPaymentMethod(
+            initialDefaultPaymentMethodIndex = null,
+            isPaymentMethodSetAsDefaultEnabled = true,
+        ) { customerStateHolder, savedPaymentMethodMutator, paymentMethods ->
+            customerStateHolder.setDefaultPaymentMethod(paymentMethods[1])
+
+            assertThat(savedPaymentMethodMutator.defaultPaymentMethodId.value).isEqualTo(paymentMethods[1].id)
+        }
+    }
+
+    @Test
+    fun `defaultPaymentMethodId changes correctly when new defaultPaymentMethod set`() {
+        runScenarioForTestingDefaultPaymentMethod(
+            initialDefaultPaymentMethodIndex = 0,
+            isPaymentMethodSetAsDefaultEnabled = true,
+        ) { customerStateHolder, savedPaymentMethodMutator, paymentMethods ->
+            assertThat(savedPaymentMethodMutator.defaultPaymentMethodId.value).isEqualTo(paymentMethods.first().id)
+
+            customerStateHolder.setDefaultPaymentMethod(paymentMethods[1])
+
+            assertThat(savedPaymentMethodMutator.defaultPaymentMethodId.value).isEqualTo(paymentMethods[1].id)
+        }
+    }
+
+    private fun runScenarioForTestingDefaultPaymentMethod(
+        initialDefaultPaymentMethodIndex: Int?,
+        isPaymentMethodSetAsDefaultEnabled: Boolean,
+        block: (
+            CustomerStateHolder,
+            SavedPaymentMethodMutator,
+            List<PaymentMethod>,
+        ) -> Unit
+    ) {
+        val paymentMethods = PaymentMethodFixtures.createCards(3)
+
+        val customerStateHolder = DefaultCustomerStateHolder(
+            savedStateHandle = SavedStateHandle(),
+            selection = MutableStateFlow(null),
+            customerMetadata =
+            stateFlowOf(PaymentMethodMetadataFixtures.DEFAULT_CUSTOMER_METADATA),
+            paymentMethodMetadataFlow = stateFlowOf(null),
+        )
+        runScenario(
+            customerStateHolder = customerStateHolder,
+            paymentMethodMetadata = PaymentMethodMetadataFactory.create(
+                hasCustomerConfiguration = true,
+                isPaymentMethodSetAsDefaultEnabled = isPaymentMethodSetAsDefaultEnabled
+            ),
+        ) {
+            customerStateHolder.setCustomerState(
+                createCustomerState(
+                    paymentMethods = paymentMethods,
+                    defaultPaymentMethodId = initialDefaultPaymentMethodIndex?.let {
+                        paymentMethods.getOrNull(it)?.id
+                    },
+                )
+            )
+
+            block(customerStateHolder, savedPaymentMethodMutator, paymentMethods)
+        }
+    }
+
+    private fun Scenario.setupCustomerState(paymentMethod: PaymentMethod) {
+        customerStateHolder.setCustomerState(
+            createCustomerState(
+                paymentMethods = listOf(paymentMethod),
+            )
+        )
+    }
+
+    @Suppress("LongMethod")
+    private fun runScenario(
+        savedPaymentMethodRepository: FakeSavedPaymentMethodRepository = FakeSavedPaymentMethodRepository(),
+        eventReporter: FakeEventReporter = FakeEventReporter(),
+        selection: MutableStateFlow<PaymentSelection?> = MutableStateFlow(null),
+        paymentMethodMetadata: PaymentMethodMetadata? = PaymentMethodMetadataFactory.create(
+            hasCustomerConfiguration = true,
+        ),
+        isLinkEnabled: StateFlow<Boolean?> = stateFlowOf(false),
+        linkAccount: StateFlow<LinkAccount?> = stateFlowOf(null),
+        customerStateHolder: CustomerStateHolder = DefaultCustomerStateHolder(
+            savedStateHandle = SavedStateHandle(),
+            selection = selection,
+            customerMetadata = stateFlowOf(
+                paymentMethodMetadata?.customerMetadata
+                    ?: PaymentMethodMetadataFixtures.DEFAULT_CUSTOMER_METADATA
+            ),
+            paymentMethodMetadataFlow = stateFlowOf(null),
+        ),
+        block: suspend Scenario.() -> Unit
+    ) {
+        runTest {
+            val currentScreen: MutableStateFlow<PaymentSheetScreen> = MutableStateFlow(PaymentSheetScreen.Loading)
+
+            val postPaymentMethodRemovedTurbine = Turbine<Unit>()
+            val prePaymentMethodRemovedTurbine = Turbine<Unit>()
+            val updatePaymentMethodTurbine = Turbine<UpdateCall>()
+
+            val savedPaymentMethodMutator = SavedPaymentMethodMutator(
+                paymentMethodMetadataFlow = stateFlowOf(paymentMethodMetadata),
+                eventReporter = eventReporter,
+                coroutineScope = coroutineScopeCleanupRule.track(CoroutineScope(UnconfinedTestDispatcher())),
+                workContext = coroutineContext,
+                uiContext = coroutineContext,
+                savedPaymentMethodRepository = savedPaymentMethodRepository,
+                selection = selection,
+                setSelection = { selection.value = it },
+                customerStateHolder = customerStateHolder,
+                prePaymentMethodRemoveActions = { prePaymentMethodRemovedTurbine.add(Unit) },
+                postPaymentMethodRemoveActions = { postPaymentMethodRemovedTurbine.add(Unit) },
+                onUpdatePaymentMethod = {
+                        displayableSavedPaymentMethod,
+                        canRemove,
+                        performRemove,
+                        updateExecutor,
+                        setDefaultPaymentMethodExecutor,
+                    ->
+                    updatePaymentMethodTurbine.add(
+                        UpdateCall(
+                            displayableSavedPaymentMethod,
+                            canRemove,
+                            performRemove,
+                            updateExecutor,
+                            setDefaultPaymentMethodExecutor
+                        )
+                    )
+                },
+                isLinkEnabled = isLinkEnabled,
+                isNotPaymentFlow = true,
+                linkAccount = linkAccount,
+            )
+            Scenario(
+                savedPaymentMethodMutator = savedPaymentMethodMutator,
+                customerStateHolder = customerStateHolder,
+                selectionSource = selection,
+                currentScreen = currentScreen,
+                prePaymentMethodRemovedTurbine = prePaymentMethodRemovedTurbine,
+                postPaymentMethodRemovedTurbine = postPaymentMethodRemovedTurbine,
+                updatePaymentMethodTurbine = updatePaymentMethodTurbine,
+                savedPaymentMethodRepository = savedPaymentMethodRepository,
+                testScope = this,
+                eventReporter = eventReporter,
+            ).apply {
+                block()
+            }
+
+            advanceUntilIdle()
+
+            postPaymentMethodRemovedTurbine.ensureAllEventsConsumed()
+            updatePaymentMethodTurbine.ensureAllEventsConsumed()
+            savedPaymentMethodRepository.validate()
+            eventReporter.validate()
+        }
+    }
+
+    private data class Scenario(
+        val savedPaymentMethodMutator: SavedPaymentMethodMutator,
+        val customerStateHolder: CustomerStateHolder,
+        val selectionSource: MutableStateFlow<PaymentSelection?>,
+        val currentScreen: MutableStateFlow<PaymentSheetScreen>,
+        val prePaymentMethodRemovedTurbine: ReceiveTurbine<Unit>,
+        val postPaymentMethodRemovedTurbine: ReceiveTurbine<Unit>,
+        val updatePaymentMethodTurbine: ReceiveTurbine<UpdateCall>,
+        val savedPaymentMethodRepository: FakeSavedPaymentMethodRepository,
+        val testScope: TestScope,
+        val eventReporter: FakeEventReporter,
+    )
+
+    private data class UpdateCall(
+        val paymentMethod: DisplayableSavedPaymentMethod,
+        val canRemove: Boolean,
+        val performRemove: suspend () -> Throwable?,
+        val updateExecutor: suspend (cardUpdateParams: CardUpdateParams) -> Result<PaymentMethod>,
+        val setSetDefaultPaymentMethodExecutor: suspend (paymentMethod: PaymentMethod) -> Result<Unit>,
+    )
+
+    private suspend fun FakeEventReporter.assertAsDefaultPaymentMethodSucceededCalls(
+        paymentMethods: List<PaymentMethod>
+    ) {
+        val succeededCall = setAsDefaultPaymentMethodSucceededCalls.awaitItem()
+        assertThat(succeededCall).isInstanceOf(FakeEventReporter.SetAsDefaultPaymentMethodSucceededCall::class.java)
+        assertThat(succeededCall.paymentMethodType).isNotNull()
+        assertThat(succeededCall.paymentMethodType).isEqualTo(paymentMethods[1].type?.code)
+    }
+
+    private suspend fun FakeEventReporter.assertUpdatePaymentMethodSucceededCalls(cardBrand: CardBrand) {
+        val succeededCall = updatePaymentMethodSucceededCalls.awaitItem()
+        assertThat(succeededCall.selectedBrand).isEqualTo(cardBrand)
+    }
+
+    private suspend fun FakeEventReporter.assertUpdatePaymentMethodFailedCalls(cardBrand: CardBrand) {
+        val failedCall = updatePaymentMethodFailedCalls.awaitItem()
+        assertThat(failedCall.selectedBrand).isEqualTo(cardBrand)
+        assertThat(failedCall.error.message).isEqualTo("Test failure")
+    }
+}

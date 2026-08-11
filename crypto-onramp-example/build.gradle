@@ -1,0 +1,61 @@
+apply from: configs.androidApplication
+
+apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
+apply plugin: "org.jetbrains.kotlin.plugin.parcelize"
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+
+android {
+    defaultConfig {
+        applicationId "com.stripe.android.crypto.onramp.example"
+        versionCode 11
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField "boolean", "IS_RUNNING_IN_CI", "$gradle.ext.isCi"
+    }
+
+    buildFeatures {
+        buildConfig true
+        viewBinding true
+        compose true
+    }
+
+    kotlin {
+        compilerOptions {
+            freeCompilerArgs.addAll([
+                    "-opt-in=com.stripe.android.crypto.onramp.ExperimentalCryptoOnramp",
+            ])
+        }
+    }
+}
+
+dependencies {
+    implementation project(':crypto-onramp')
+    implementation project(':payments')
+    implementation project(":stripe-ui-core")
+
+    implementation libs.compose.activity
+    implementation libs.compose.material
+    implementation libs.compose.ui
+    implementation libs.compose.viewModels
+    implementation libs.material
+    
+    implementation libs.fuel
+    implementation libs.fuelCoroutines
+    implementation libs.kotlin.serialization
+
+    debugImplementation libs.leakCanary
+
+    androidTestImplementation project(':payments-core-testing')
+    androidTestImplementation testLibs.androidx.junit
+    androidTestImplementation testLibs.androidx.junitKtx
+    androidTestImplementation testLibs.androidx.testRunner
+    androidTestImplementation testLibs.androidx.uiAutomator
+    androidTestImplementation testLibs.androidx.archCore
+    androidTestImplementation testLibs.androidx.composeUi
+    androidTestImplementation testLibs.androidx.core
+    androidTestImplementation testLibs.androidx.coreKtx
+    androidTestImplementation testLibs.androidx.testRules
+    androidTestImplementation testLibs.androidx.truth
+    androidTestImplementation testLibs.espresso.core
+}
