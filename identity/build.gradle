@@ -1,0 +1,111 @@
+apply from: configs.androidLibrary
+
+apply plugin: 'org.jetbrains.kotlin.plugin.parcelize'
+apply plugin: 'org.jetbrains.kotlin.plugin.serialization'
+apply plugin: 'kotlin-kapt'
+
+dependencies {
+    implementation project(":camera-core")
+    implementation project(":stripe-core")
+    implementation project(":stripe-ui-core")
+
+    // vanilla tflite library
+    implementation "org.tensorflow:tensorflow-lite:2.11.0"
+    // support library to reshape image to the input model shape
+    implementation 'org.tensorflow:tensorflow-lite-support:0.4.3'
+
+    implementation "androidx.constraintlayout:constraintlayout:$androidxConstraintlayoutVersion"
+    implementation "androidx.activity:activity-ktx:$androidxActivityVersion"
+    implementation "androidx.fragment:fragment-ktx:$androidxFragmentVersion"
+
+    // Navigation
+    implementation "androidx.navigation:navigation-fragment-ktx:$androidxNavigationVersion"
+    implementation "androidx.navigation:navigation-ui-ktx:$androidxNavigationVersion"
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+
+    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:$kotlinSerializationVersion"
+
+    implementation "androidx.core:core-ktx:$androidxCoreVersion"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$kotlinCoroutinesVersion"
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:$androidxLifecycleVersion"
+    implementation "androidx.lifecycle:lifecycle-livedata-ktx:$androidxLifecycleVersion"
+    implementation "androidx.lifecycle:lifecycle-viewmodel-ktx:$androidxLifecycleVersion"
+    implementation "androidx.appcompat:appcompat:$androidxAppcompatVersion"
+    implementation "com.google.android.material:material:$materialVersion"
+    implementation "androidx.constraintlayout:constraintlayout:$androidxConstraintlayoutVersion"
+    implementation "com.google.dagger:dagger:$daggerVersion"
+    kapt "com.google.dagger:dagger-compiler:$daggerVersion"
+    implementation "androidx.browser:browser:$androidxBrowserVersion"
+
+    // Compose
+    implementation "androidx.compose.runtime:runtime:$androidxComposeRuntimeVersion"
+    implementation "androidx.activity:activity-compose:$androidxActivityVersion"
+    // Integration with ViewModels
+    implementation "androidx.lifecycle:lifecycle-viewmodel-compose:$androidxLifecycleVersion"
+    // Integration with Navigation
+    implementation "androidx.navigation:navigation-compose:$androidxNavigationVersion"
+    // Integration with observables
+    implementation "androidx.compose.runtime:runtime-livedata:$androidxComposeRuntimeVersion"
+    // Material Design
+    implementation "androidx.compose.material:material:$androidxComposeVersion"
+    // MdcTheme
+    implementation "com.google.android.material:compose-theme-adapter:1.2.1"
+    // Test rules and transitive dependencies:
+    testImplementation("androidx.compose.ui:ui-test-junit4:$androidxComposeUiVersion")
+    // Needed for createComposeRule, but not createAndroidComposeRule:
+    debugImplementation("androidx.compose.ui:ui-test-manifest:$androidxComposeUiVersion")
+    // temporary fix for running compose test in RobolectricTestRunner, see https://github.com/robolectric/robolectric/issues/6593
+    testImplementation "androidx.test.espresso:espresso-core:3.5.0"
+
+
+    testImplementation "junit:junit:$junitVersion"
+    testImplementation "org.mockito.kotlin:mockito-kotlin:$mockitoKotlinVersion"
+    testImplementation "org.mockito:mockito-inline:$mockitoCoreVersion"
+    testImplementation "com.google.truth:truth:$truthVersion"
+    testImplementation "org.robolectric:robolectric:$robolectricVersion"
+    testImplementation "androidx.fragment:fragment-testing:$androidxFragmentVersion"
+    testImplementation "androidx.navigation:navigation-testing:$androidxNavigationVersion"
+    testImplementation "androidx.arch.core:core-testing:$androidxArchCoreVersion"
+    testImplementation "org.jetbrains.kotlin:kotlin-test-junit:$kotlinVersion"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$kotlinCoroutinesVersion"
+
+    ktlint "com.pinterest:ktlint:$ktlintVersion"
+}
+
+android {
+    sourceSets {
+        main {
+            assets {
+                srcDirs 'src/main/assets'
+            }
+        }
+    }
+
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            all {
+                maxHeapSize = "1024m"
+            }
+        }
+        // Make sure animations are off when we run espresso tests
+        animationsDisabled = true
+    }
+
+    buildFeatures {
+        viewBinding true
+        compose true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion "$androidxComposeCompilerVersion"
+    }
+}
+
+ext {
+    artifactId = "identity"
+    artifactName = "identity"
+    artifactDescrption = "Stripe Identity Android SDK"
+}
+
+apply from: "${rootDir}/deploy/deploy.gradle"
