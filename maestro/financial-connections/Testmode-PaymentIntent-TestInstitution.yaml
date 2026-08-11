@@ -1,0 +1,35 @@
+appId: com.stripe.android.financialconnections.example
+tags:
+  - all
+  - testmode
+  - native
+  - payment
+---
+- startRecording: /tmp/test_results/testmode-paymentintent-testinstitution
+- openLink: stripeconnectionsexample://playground?flow=PaymentIntent&financial_connections_override_native=native&merchant=testmode
+- tapOn: "Connect Accounts!"
+# Wait until the consent button is visible
+- extendedWaitUntil:
+    visible:
+      id: "consent_cta"
+    timeout: 30000
+- tapOn:
+    id: "consent_cta"
+# SELECT LEGACY INSTITUTION
+- tapOn: "Test Institution"
+####### Bypass Chrome on-boarding screen #######
+- runFlow:
+    file: ../common/subflow-skip-chrome-welcome.yaml
+###############################################
+# SELECT SUCCESS ACCOUNT
+- extendedWaitUntil:
+    visible: "Success"
+    timeout: 60000
+- tapOn: "Success" # select all accounts
+- tapOn:
+    text: "Link account"
+    retryTapIfNoChange: false
+# CONFIRM AND COMPLETE
+- tapOn: "Done"
+- assertVisible: ".*Intent Confirmed!.*"
+- stopRecording
