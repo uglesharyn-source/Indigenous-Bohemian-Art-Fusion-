@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+    <!-- Content description for camera icon -->
+    <string name="stripe_description_camera">camera icon</string>
+    <string name="stripe_test_model_title">You\'re currently in testmode</string>
+    <string name="stripe_test_model_content">This page is only shown in testmode.</string>
+    <string name="stripe_complete_with_test_data">Complete with test data</string>
+    <string name="stripe_complete_with_test_data_details">Save time by choosing a desired result and completing instantly with that outcome. The mobile SDK flow will return with result Completed.</string>
+</resources>
