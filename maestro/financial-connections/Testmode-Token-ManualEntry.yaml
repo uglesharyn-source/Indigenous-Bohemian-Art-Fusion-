@@ -1,0 +1,46 @@
+appId: com.stripe.android.financialconnections.example
+tags:
+  - all
+  - testmode
+  - native
+  - token
+---
+- launchApp
+# Android specific: Navigate to example
+- startRecording: /tmp/test_results/testmode-token_manualentry
+- tapOn: "Playground"
+- tapOn:
+    id: "Native option"
+- tapOn:
+    id: "Token option"
+- tapOn:
+    id: "Merchant setting"
+- tapOn:
+    id: "Test option"
+- tapOn: "Connect Accounts!"
+# Common: web AuthFlow - connect OAuth institution
+- extendedWaitUntil:
+    visible:
+      id: "consent_cta"
+    timeout: 30000
+- tapOn: "Enter account details manually instead"
+- assertVisible: "Enter bank account details"
+- tapOn:
+    id: "RoutingInput"
+- inputText: "110000000"
+- back
+- scroll
+- tapOn:
+    id: "AccountInput"
+- inputText: "000123456789"
+- back
+- scroll
+- tapOn:
+    id: "ConfirmAccountInput"
+- inputText: "000123456789"
+- tapOn:
+    text: "Continue"
+    retryTapIfNoChange: false
+- tapOn: "Done"
+- assertVisible: ".*Completed!.*"
+- stopRecording
