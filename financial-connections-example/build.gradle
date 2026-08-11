@@ -1,0 +1,73 @@
+apply from: configs.androidApplication
+
+apply plugin: 'com.google.firebase.appdistribution'
+apply plugin: 'com.google.gms.google-services'
+
+android {
+    defaultConfig {
+        applicationId "com.stripe.android.financialconnections.example"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        versionName VERSION_NAME
+        versionCode getVersionCode(versionName)
+
+        manifestPlaceholders = [
+            STRIPE_FINANCIAL_CONNECTIONS_EXAMPLE_BACKEND_URL: getBackendUrl()
+        ]
+    }
+
+    buildTypes {
+        debug {
+            firebaseAppDistribution {
+                groups = "financial-connections"
+            }
+        }
+    }
+
+    buildFeatures {
+        viewBinding true
+        compose true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion "$androidxComposeCompilerVersion"
+    }
+}
+
+// Read values from gradle.properties or system environment variable
+def getBackendUrl() {
+    return findProperty('STRIPE_FINANCIAL_CONNECTIONS_EXAMPLE_BACKEND_URL') ?: ""
+}
+
+dependencies {
+    implementation project(':financial-connections')
+    implementation project(':payments-core')
+
+    implementation "androidx.activity:activity-ktx:$androidxActivityVersion"
+    implementation "androidx.appcompat:appcompat:$androidxAppcompatVersion"
+    implementation "androidx.core:core-ktx:$androidxCoreVersion"
+    implementation "com.google.android.material:material:$materialVersion"
+    implementation "com.google.code.gson:gson:$gsonVersion"
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.10.0'
+    implementation "com.squareup.retrofit2:retrofit:$retrofitVersion"
+    implementation "com.squareup.retrofit2:converter-gson:$retrofitVersion"
+
+    // Jetpack Compose
+    implementation "androidx.activity:activity-compose:$androidxActivityVersion"
+    implementation "androidx.compose.material:material:$androidxComposeVersion"
+    implementation "androidx.compose.runtime:runtime-livedata:$androidxComposeRuntimeVersion"
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:$androidxLifecycleVersion"
+    implementation "androidx.compose.ui:ui:$androidxComposeUiVersion"
+    implementation "androidx.compose.ui:ui-tooling-preview:$androidxComposeUiVersion"
+
+    testImplementation "junit:junit:$junitVersion"
+    testImplementation "androidx.test.ext:junit-ktx:$androidTestJunitVersion"
+
+    androidTestImplementation "androidx.test.espresso:espresso-core:$espressoVersion"
+    androidTestImplementation "androidx.compose.ui:ui-test-junit4:$androidxComposeUiVersion"
+    debugImplementation "androidx.compose.ui:ui-tooling:$androidxComposeUiVersion"
+    debugImplementation "androidx.compose.ui:ui-test-manifest:$androidxComposeUiVersion"
+
+    debugImplementation "com.squareup.leakcanary:leakcanary-android:$leakCanaryVersion"
+}
