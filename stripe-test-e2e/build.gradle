@@ -1,0 +1,58 @@
+apply from: configs.androidApplication
+
+// Read values from gradle.properties or system environment variable
+def getBackendUrl() {
+    return readProperty('STRIPE_END_TO_END_TESTS_BACKEND_URL')
+}
+
+def getPublishableKey() {
+    return readProperty('STRIPE_END_TO_END_TESTS_PUBLISHABLE_KEY')
+}
+
+private def readProperty(name) {
+    final String propValue = findProperty(name) ?: System.getenv(name)
+    return propValue?.trim() ? propValue : ""
+}
+
+android {
+    defaultConfig {
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        // From https://developer.android.com/training/testing/junit-runner:
+        // > To remove all shared state from your device's CPU and memory after each test,
+        // > use the clearPackageData flag.
+        testInstrumentationRunnerArguments clearPackageData: 'true'
+
+        manifestPlaceholders = [
+                BACKEND_URL: getBackendUrl(),
+                PUBLISHABLE_KEY: getPublishableKey()
+        ]
+    }
+
+    testOptions {
+        unitTests {
+            // Note: without this, all Robolectric tests using BuildConfig will fail.
+            includeAndroidResources = true
+        }
+    }
+}
+
+dependencies {
+    implementation project(':payments')
+
+    testImplementation "org.robolectric:robolectric:$robolectricVersion"
+    testImplementation "junit:junit:$junitVersion"
+    testImplementation "com.google.truth:truth:$truthVersion"
+    testImplementation "androidx.arch.core:core-testing:$androidxArchCoreVersion"
+    testImplementation "androidx.test:core:$androidTestVersion"
+    testImplementation "androidx.test.ext:junit-ktx:$androidTestJunitVersion"
+
+    testImplementation "com.squareup.retrofit2:retrofit:2.9.0"
+    testImplementation "com.squareup.retrofit2:converter-moshi:2.9.0"
+
+    testImplementation "org.jetbrains.kotlin:kotlin-test-junit:$kotlinVersion"
+    testImplementation "org.jetbrains.kotlin:kotlin-test-annotations-common:$kotlinVersion"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$kotlinCoroutinesVersion"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlinCoroutinesVersion"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$kotlinCoroutinesVersion"
+}
