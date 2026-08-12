@@ -1,0 +1,40 @@
+name: Upload aabs on push
+# Upload aabs of example apps when changes are merged to master branch.
+# The aab is used as a base reference to compare with aab built from pull requests.
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  upload-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stripe_setup
+      - name: Upload Identity example release bundle to Emerge
+        run: ./gradlew :identity-example:emergeUploadTheme1ReleaseAab
+        env:
+          EMERGE_API_TOKEN: ${{ secrets.EMERGE_API_KEY }}
+          EMERGE_TAG: push
+  upload-financial-connections:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stripe_setup
+      - name: Upload Financial Connections example release bundle to Emerge
+        run: ./gradlew :financial-connections-example:emergeUploadReleaseAab
+        env:
+          EMERGE_API_TOKEN: ${{ secrets.EMERGE_API_KEY }}
+          EMERGE_TAG: push
+  upload-payment-sheet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stripe_setup
+      - name: Upload Payment Sheet example release bundle to Emerge
+        run: ./gradlew :paymentsheet-example:emergeUploadReleaseAab
+        env:
+          EMERGE_API_TOKEN: ${{ secrets.EMERGE_API_KEY }}
+          EMERGE_TAG: push
