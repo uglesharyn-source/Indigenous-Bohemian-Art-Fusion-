@@ -1,0 +1,67 @@
+package com.stripe.android.paymentsheet.paymentdatacollection.ach
+
+import android.os.Parcelable
+import androidx.annotation.StringRes
+import com.stripe.android.financialconnections.model.BankAccount
+import com.stripe.android.paymentsheet.paymentdatacollection.ach.USBankAccountFormScreenState.MandateCollection
+import com.stripe.android.paymentsheet.paymentdatacollection.ach.USBankAccountFormScreenState.ResultIdentifier
+import kotlinx.parcelize.Parcelize
+
+internal sealed class USBankAccountFormScreenState(
+    @StringRes open val error: Int? = null,
+    open val isProcessing: Boolean = false
+) : Parcelable {
+    abstract val primaryButtonText: String
+    abstract val mandateText: String?
+
+    @Parcelize
+    data class BillingDetailsCollection(
+        @StringRes override val error: Int? = null,
+        override val primaryButtonText: String,
+        override val isProcessing: Boolean,
+    ) : USBankAccountFormScreenState() {
+
+        override val mandateText: String?
+            get() = null
+    }
+
+    @Parcelize
+    data class MandateCollection(
+        val resultIdentifier: ResultIdentifier,
+        val bankName: String?,
+        val last4: String?,
+        val intentId: String?,
+        override val primaryButtonText: String,
+        override val mandateText: String?,
+    ) : USBankAccountFormScreenState()
+
+    @Parcelize
+    data class VerifyWithMicrodeposits(
+        val paymentAccount: BankAccount,
+        val financialConnectionsSessionId: String,
+        val intentId: String?,
+        override val primaryButtonText: String,
+        override val mandateText: String?,
+    ) : USBankAccountFormScreenState()
+
+    @Parcelize
+    data class SavedAccount(
+        val financialConnectionsSessionId: String?,
+        val intentId: String?,
+        val bankName: String,
+        val last4: String?,
+        override val primaryButtonText: String,
+        override val mandateText: String?,
+    ) : USBankAccountFormScreenState()
+
+    internal sealed interface ResultIdentifier : Parcelable {
+        @Parcelize
+        data class Session(val id: String) : ResultIdentifier
+
+        @Parcelize
+        data class PaymentMethod(val id: String) : ResultIdentifier
+    }
+}
+
+internal val USBankAccountFormScreenState.showInstantDebitsTerms: Boolean
+    get() = this is MandateCollection && resultIdentifier is ResultIdentifier.PaymentMethod
