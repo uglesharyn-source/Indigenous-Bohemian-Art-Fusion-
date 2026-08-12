@@ -1,0 +1,198 @@
+package com.stripe.example.activity
+
+import android.content.Intent
+import android.os.Bundle
+import android.view.View
+import androidx.lifecycle.Observer
+import androidx.lifecycle.lifecycleScope
+import com.stripe.android.PaymentAuthConfig
+import com.stripe.android.Stripe
+import com.stripe.android.getPaymentIntentResult
+import com.stripe.android.model.Address
+import com.stripe.android.model.ConfirmPaymentIntentParams
+import com.stripe.android.model.PaymentMethodCreateParams
+import com.stripe.android.model.StripeIntent
+import com.stripe.example.Settings
+import com.stripe.example.databinding.PaymentAuthActivityBinding
+import kotlinx.coroutines.launch
+
+/**
+ * An example of creating a PaymentIntent, then confirming it with [Stripe.confirmPayment]
+ */
+class PaymentAuthActivity : StripeIntentActivity() {
+
+    private val viewBinding: PaymentAuthActivityBinding by lazy {
+        PaymentAuthActivityBinding.inflate(layoutInflater)
+    }
+    private val keyboardController: KeyboardController by lazy {
+        KeyboardController(this)
+    }
+
+    private var usePaymentLauncher = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(viewBinding.root)
+
+        viewModel.inProgress.observe(this, { enableUi(!it) })
+        viewModel.status.observe(this, Observer(viewBinding.status::setText))
+        viewModel.requiresAction.observe(this, { requiresAction ->
+            if (requiresAction) {
+                if (usePaymentLauncher) {
+                    paymentLauncher.handleNextActionForPaymentIntent(viewModel.piSecret!!)
+                } else {
+                    viewModel.stripe.handleNextActionForPayment(this, viewModel.piSecret!!)
+                }
+            }
+        })
+
+        val stripeAccountId = Settings(this).stripeAccountId
+
+        val uiCustomization =
+            PaymentAuthConfig.Stripe3ds2UiCustomization.Builder().build()
+        PaymentAuthConfig.init(
+            PaymentAuthConfig.Builder()
+                .set3ds2Config(
+                    PaymentAuthConfig.Stripe3ds2Config.Builder()
+                        .setTimeout(6)
+                        .setUiCustomization(uiCustomization)
+                        .build()
+                )
+                .build()
+        )
+
+        viewBinding.confirmWith3ds1Button.setOnClickListener {
+            createAndConfirmPaymentIntent(
+                "us",
+                confirmParams3ds1,
+                stripeAccountId = stripeAccountId
+            )
+        }
+        viewBinding.confirmWith3ds2Button.setOnClickListener {
+            createAndConfirmPaymentIntent(
+                "us",
+                confirmParams3ds2,
+                shippingDetails = SHIPPING,
+                stripeAccountId = stripeAccountId
+            )
+        }
+
+        viewBinding.confirmWithNewCardButton.setOnClickListener {
+            keyboardController.hide()
+            viewBinding.cardInputWidget.paymentMethodCreateParams?.let {
+                createAndConfirmPaymentIntent(
+                    "us",
+                    it,
+                    shippingDetails = SHIPPING,
+                    stripeAccountId = stripeAccountId
+                )
+            }
+        }
+
+        viewBinding.confirmWithPaymentLauncher.setOnClickListener {
+            keyboardController.hide()
+            usePaymentLauncher = true
+            viewBinding.confirmAfter3ds2.isEnabled = true
+            viewBinding.cardInputWidget.paymentMethodCreateParams?.let {
+                createPaymentMethod(it)
+            }
+        }
+
+        viewBinding.confirmWithStripeKt.setOnClickListener {
+            keyboardController.hide()
+            usePaymentLauncher = false
+            viewBinding.confirmAfter3ds2.isEnabled = false
+            viewBinding.cardInputWidget.paymentMethodCreateParams?.let {
+                createPaymentMethod(it)
+            }
+        }
+
+        viewBinding.confirmAfter3ds2.setOnClickListener {
+            viewModel.intentId?.let { viewModel.confirmPaymentIntentWithIntentId(it) }
+        }
+
+        viewBinding.setupButton.setOnClickListener {
+            createAndConfirmSetupIntent(
+                "us",
+                confirmParams3ds2,
+                stripeAccountId = stripeAccountId
+            )
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+   // override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+
+        if (viewModel.stripe.isPaymentResult(requestCode, data)) {
+            lifecycleScope.launch {
+                runCatching {
+                    viewModel.stripe.getPaymentIntentResult(requestCode, data!!)
+                }.fold(
+                    onSuccess = { result ->
+                        val paymentIntent = result.intent
+                        val status = paymentIntent.status
+
+                        viewBinding.status.text = "Status: ${status?.toString()}"
+                        if (status == StripeIntent.Status.RequiresConfirmation) {
+                            viewBinding.status.text = "Confirming intent ${paymentIntent.id}"
+                            viewModel.confirmPaymentIntentWithIntentId(paymentIntent.id!!)
+                        }
+                    },
+                    onFailure = {
+                        viewBinding.status.text = "Failed: ${it.message}"
+                    }
+                )
+            }
+        }
+    }
+
+    private fun enableUi(enable: Boolean) {
+        viewBinding.progressBar.visibility = if (enable) View.INVISIBLE else View.VISIBLE
+        viewBinding.confirmWith3ds2Button.isEnabled = enable
+        viewBinding.confirmWith3ds1Button.isEnabled = enable
+        viewBinding.confirmWithNewCardButton.isEnabled = enable
+        viewBinding.setupButton.isEnabled = enable
+    }
+
+    private companion object {
+
+        /**
+         * See https://stripe.com/docs/payments/3d-secure#three-ds-cards for more options.
+         */
+        private val confirmParams3ds2 =
+            PaymentMethodCreateParams.create(
+                PaymentMethodCreateParams.Card.Builder()
+                    .setNumber("4000000000003238")
+                    .setExpiryMonth(1)
+                    .setExpiryYear(2045)
+                    .setCvc("123")
+                    .build()
+            )
+
+        private val confirmParams3ds1 =
+            PaymentMethodCreateParams.create(
+                PaymentMethodCreateParams.Card.Builder()
+                    .setNumber("4000000000003063")
+                    .setExpiryMonth(1)
+                    .setExpiryYear(2045)
+                    .setCvc("123")
+                    .build()
+            )
+
+        private val SHIPPING = ConfirmPaymentIntentParams.Shipping(
+            address = Address.Builder()
+                .setCity("San Francisco")
+                .setCountry("US")
+                .setLine1("123 Market St")
+                .setLine2("#345")
+                .setPostalCode("94107")
+                .setState("CA")
+                .build(),
+            name = "Jenny Rosen",
+            carrier = "Fedex",
+            trackingNumber = "12345"
+        )
+    }
+}
